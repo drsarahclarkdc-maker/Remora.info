@@ -26,9 +26,12 @@ import {
   Settings2,
   Building2,
   ArrowUpDown,
-  CreditCard
+  CreditCard,
+  Zap
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -50,8 +53,30 @@ const DashboardLayout = ({ children }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [credits, setCredits] = useState(null);
 
   const isActive = (href) => location.pathname === href;
+
+  const fetchCredits = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/billing/usage`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setCredits(data);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchCredits();
+      const interval = setInterval(fetchCredits, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user, fetchCredits]);
+
+  const creditPct = credits ? Math.max(0, 100 - (credits.usage_percentage || 0)) : 100;
+  const creditColor = creditPct > 50 ? 'bg-emerald-500' : creditPct > 20 ? 'bg-yellow-500' : 'bg-red-500';
 
   return (
     <div className="min-h-screen bg-background">
@@ -87,6 +112,30 @@ const DashboardLayout = ({ children }) => {
             );
           })}
         </nav>
+
+        {/* Credit Counter */}
+        {credits && (
+          <div className="px-4 pb-2">
+            <Link to="/billing" className="block p-3 rounded-lg bg-muted/40 hover:bg-muted/60 transition-colors" data-testid="sidebar-credit-counter">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Credits</span>
+                <span className="text-xs font-medium text-muted-foreground">{credits.plan_name}</span>
+              </div>
+              <div className="flex items-baseline gap-1 mb-2">
+                <span className="text-lg font-bold tabular-nums" data-testid="sidebar-credits-remaining">
+                  {(credits.credits_remaining || 0).toLocaleString()}
+                </span>
+                <span className="text-xs text-muted-foreground">/ {(credits.credits_total || 0).toLocaleString()}</span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
+                <div className={`h-full rounded-full transition-all ${creditColor}`} style={{ width: `${creditPct}%` }} />
+              </div>
+              {credits.alert && (
+                <p className="text-xs text-yellow-500 mt-1.5 font-medium">Running low — upgrade plan</p>
+              )}
+            </Link>
+          </div>
+        )}
 
         {/* User section */}
         <div className="border-t border-border p-4">
@@ -175,6 +224,20 @@ const DashboardLayout = ({ children }) => {
         <header className="hidden lg:flex sticky top-0 z-30 h-16 items-center justify-between border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 px-6">
           <div />
           <div className="flex items-center gap-4">
+            {/* Credit counter in header */}
+            {credits && (
+              <Link
+                to="/billing"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/40 hover:bg-muted/60 transition-colors"
+                data-testid="header-credit-counter"
+              >
+                <Zap className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-sm font-medium tabular-nums" data-testid="header-credits-remaining">
+                  {(credits.credits_remaining || 0).toLocaleString()}
+                </span>
+                <span className="text-xs text-muted-foreground">credits</span>
+              </Link>
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="relative h-9 w-9 rounded-full" data-testid="user-menu-btn">

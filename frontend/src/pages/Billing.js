@@ -26,6 +26,7 @@ const PLAN_FEATURES = {
   starter: ['10,000 credits/month', 'Bulk crawl (100 URLs)', 'Scheduled crawling', 'Webhook deliveries', 'Email support'],
   growth: ['40,000 credits/month', 'Everything in Starter', 'Custom crawl rules', 'Search ranking configs', 'Priority support'],
   scale: ['200,000 credits/month', 'Everything in Growth', 'Organization & teams', 'Dedicated support', 'SLA guarantee'],
+  enterprise: ['Custom credit volume', 'Everything in Scale', 'Dedicated API endpoints', 'Private deployment', 'Custom SLAs', '24/7 support'],
 };
 
 const OPERATION_ICONS = {
@@ -237,7 +238,7 @@ const Billing = () => {
         {/* Plans */}
         <div>
           <h2 className="text-xl font-semibold mb-4">Plans</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             {plans.map((plan) => {
               const isCurrent = plan.plan_id === currentPlan;
               const isPopular = plan.plan_id === 'growth';
@@ -261,6 +262,8 @@ const Billing = () => {
                     <CardDescription>
                       {plan.price === 0 ? (
                         <span className="text-2xl font-bold text-foreground">Free</span>
+                      ) : plan.price < 0 ? (
+                        <span className="text-2xl font-bold text-foreground">Custom</span>
                       ) : (
                         <>
                           <span className="text-2xl font-bold text-foreground">${plan.price}</span>
@@ -285,6 +288,15 @@ const Billing = () => {
                     ) : plan.plan_id === 'free' ? (
                       <Button variant="outline" className="w-full" disabled>
                         Included
+                      </Button>
+                    ) : plan.plan_id === 'enterprise' ? (
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => window.location.href = 'mailto:enterprise@remora.info?subject=Enterprise%20Plan%20Inquiry'}
+                        data-testid={`plan-btn-${plan.plan_id}`}
+                      >
+                        Contact Us
                       </Button>
                     ) : (
                       <Button

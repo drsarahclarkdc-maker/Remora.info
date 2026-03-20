@@ -33,15 +33,15 @@ def authenticated_client(api_client):
 class TestBillingPlans:
     """Test GET /api/billing/plans - PUBLIC endpoint"""
     
-    def test_get_plans_returns_4_plans(self, api_client):
-        """Plans endpoint should return 4 plans: free, starter, growth, scale"""
+    def test_get_plans_returns_5_plans(self, api_client):
+        """Plans endpoint should return 5 plans: free, starter, growth, scale, enterprise"""
         response = api_client.get(f"{BASE_URL}/api/billing/plans")
         
         assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
         
         plans = response.json()
         assert isinstance(plans, list), "Plans should be a list"
-        assert len(plans) == 4, f"Expected 4 plans, got {len(plans)}"
+        assert len(plans) == 5, f"Expected 5 plans, got {len(plans)}"
         
         # Verify plan IDs
         plan_ids = [p["plan_id"] for p in plans]
@@ -49,6 +49,7 @@ class TestBillingPlans:
         assert "starter" in plan_ids, "Missing 'starter' plan"
         assert "growth" in plan_ids, "Missing 'growth' plan"
         assert "scale" in plan_ids, "Missing 'scale' plan"
+        assert "enterprise" in plan_ids, "Missing 'enterprise' plan"
     
     def test_plans_have_correct_structure(self, api_client):
         """Each plan should have plan_id, name, price, credits, description"""
@@ -76,7 +77,7 @@ class TestBillingPlans:
         assert plans["scale"]["price"] == 399, f"Scale plan price should be 399, got {plans['scale']['price']}"
     
     def test_plans_have_correct_credits(self, api_client):
-        """Verify correct credits: Free=3000, Starter=10000, Growth=40000, Scale=200000"""
+        """Verify correct credits: Free=3000, Starter=10000, Growth=40000, Scale=200000, Enterprise=-1"""
         response = api_client.get(f"{BASE_URL}/api/billing/plans")
         assert response.status_code == 200
         
@@ -86,6 +87,17 @@ class TestBillingPlans:
         assert plans["starter"]["credits"] == 10000, f"Starter plan credits should be 10000, got {plans['starter']['credits']}"
         assert plans["growth"]["credits"] == 40000, f"Growth plan credits should be 40000, got {plans['growth']['credits']}"
         assert plans["scale"]["credits"] == 200000, f"Scale plan credits should be 200000, got {plans['scale']['credits']}"
+        assert plans["enterprise"]["credits"] == -1, f"Enterprise plan credits should be -1 (custom), got {plans['enterprise']['credits']}"
+    
+    def test_enterprise_plan_has_custom_price(self, api_client):
+        """Enterprise plan should have price=-1 indicating custom pricing"""
+        response = api_client.get(f"{BASE_URL}/api/billing/plans")
+        assert response.status_code == 200
+        
+        plans = {p["plan_id"]: p for p in response.json()}
+        
+        assert plans["enterprise"]["price"] == -1, f"Enterprise plan price should be -1 (custom), got {plans['enterprise']['price']}"
+        assert "enterprise" in plans["enterprise"]["plan_id"].lower()
 
 
 class TestBillingUsage:
@@ -150,6 +162,17 @@ class TestBillingCheckout:
             json={"plan_id": "invalid_plan", "origin_url": "https://example.com"}
         )
         assert response.status_code == 400, f"Expected 400 for invalid plan, got {response.status_code}"
+    
+    def test_checkout_rejects_enterprise_plan(self, authenticated_client):
+        """Cannot checkout for enterprise plan (requires contact)"""
+        response = authenticated_client.post(
+            f"{BASE_URL}/api/billing/checkout",
+            json={"plan_id": "enterprise", "origin_url": "https://example.com"}
+        )
+        assert response.status_code == 400, f"Expected 400 for enterprise plan, got {response.status_code}"
+        
+        data = response.json()
+        assert "detail" in data, "Response should contain error detail"
     
     def test_checkout_creates_session_for_starter(self, authenticated_client):
         """Checkout for starter plan should create Stripe session"""

@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 
 # Use the public URL from environment
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://remora-staging.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://remora-crawler.preview.emergentagent.com').rstrip('/')
 
 # Test credentials from iteration 2
 TEST_SESSION_TOKEN = "test_session_1773982477902"
@@ -178,7 +178,7 @@ class TestBillingCheckout:
         """Checkout for starter plan should create Stripe session"""
         response = authenticated_client.post(
             f"{BASE_URL}/api/billing/checkout",
-            json={"plan_id": "starter", "origin_url": "https://remora-staging.preview.emergentagent.com"}
+            json={"plan_id": "starter", "origin_url": "https://remora-crawler.preview.emergentagent.com"}
         )
         
         assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
@@ -192,7 +192,7 @@ class TestBillingCheckout:
         """Checkout for growth plan should create Stripe session"""
         response = authenticated_client.post(
             f"{BASE_URL}/api/billing/checkout",
-            json={"plan_id": "growth", "origin_url": "https://remora-staging.preview.emergentagent.com"}
+            json={"plan_id": "growth", "origin_url": "https://remora-crawler.preview.emergentagent.com"}
         )
         
         assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
@@ -205,7 +205,7 @@ class TestBillingCheckout:
         """Checkout for scale plan should create Stripe session"""
         response = authenticated_client.post(
             f"{BASE_URL}/api/billing/checkout",
-            json={"plan_id": "scale", "origin_url": "https://remora-staging.preview.emergentagent.com"}
+            json={"plan_id": "scale", "origin_url": "https://remora-crawler.preview.emergentagent.com"}
         )
         
         assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"

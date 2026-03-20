@@ -209,17 +209,7 @@ async def toggle_scheduled_crawl(schedule_id: str, user: User = Depends(get_curr
     return {"schedule_id": schedule_id, "is_active": new_status}
 
 
-# History endpoints
-@router.get("/crawl/history")
-async def list_crawl_history(user: User = Depends(get_current_user), limit: int = 50):
-    return await db.crawl_history.find({}, {"_id": 0}).sort("crawled_at", -1).limit(limit).to_list(limit)
-
-
-@router.get("/crawl/history/{content_id}")
-async def get_content_crawl_history(content_id: str, user: User = Depends(get_current_user)):
-    return await db.crawl_history.find({"content_id": content_id}, {"_id": 0}).sort("crawled_at", -1).to_list(50)
-
-
+# History endpoints — stats MUST be before {content_id} to avoid path conflict
 @router.get("/crawl/history/stats")
 async def get_crawl_history_stats(user: User = Depends(get_current_user)):
     total = await db.crawl_history.count_documents({})
@@ -234,6 +224,16 @@ async def get_crawl_history_stats(user: User = Depends(get_current_user)):
         "unique_domains": len(unique_domains), "total_content": total_content,
         "recent": recent
     }
+
+
+@router.get("/crawl/history")
+async def list_crawl_history(user: User = Depends(get_current_user), limit: int = 50):
+    return await db.crawl_history.find({}, {"_id": 0}).sort("crawled_at", -1).limit(limit).to_list(limit)
+
+
+@router.get("/crawl/history/{content_id}")
+async def get_content_crawl_history(content_id: str, user: User = Depends(get_current_user)):
+    return await db.crawl_history.find({"content_id": content_id}, {"_id": 0}).sort("crawled_at", -1).to_list(50)
 
 
 async def run_scheduled_crawls():

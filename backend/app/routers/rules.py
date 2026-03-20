@@ -16,11 +16,17 @@ async def list_crawl_rules(user: User = Depends(get_current_user)):
 
 @router.post("/rules")
 async def create_crawl_rule(rule_data: CrawlRuleCreate, user: User = Depends(get_current_user)):
+    existing = await db.crawl_rules.find_one({
+        "user_id": user.user_id, "domain": rule_data.domain
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Rule for this domain already exists")
     rule = CrawlRule(rule_id=f"rule_{uuid.uuid4().hex[:12]}", user_id=user.user_id, **rule_data.model_dump())
     doc = rule.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     doc["updated_at"] = doc["updated_at"].isoformat()
     await db.crawl_rules.insert_one(doc)
+    doc.pop("_id", None)
     return doc
 
 

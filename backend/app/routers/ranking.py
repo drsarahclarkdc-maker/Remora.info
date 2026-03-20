@@ -21,6 +21,7 @@ async def create_ranking_config(config_data: SearchRankingConfigCreate, user: Us
     doc = config.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     await db.ranking_configs.insert_one(doc)
+    doc.pop("_id", None)
     return doc
 
 

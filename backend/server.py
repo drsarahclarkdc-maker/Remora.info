@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -14,6 +14,12 @@ import secrets
 import hashlib
 import aiohttp
 import meilisearch
+import redis
+import json
+import httpx
+from bs4 import BeautifulSoup
+import asyncio
+from urllib.parse import urlparse
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -23,17 +29,41 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Meilisearch connection (using local instance or mock if not available)
-MEILI_HOST = os.environ.get('MEILI_HOST', 'http://localhost:7700')
-MEILI_KEY = os.environ.get('MEILI_MASTER_KEY', 'masterKey')
+# Meilisearch connection
+MEILI_HOST = os.environ.get('MEILI_HOST', 'http://127.0.0.1:7700')
+MEILI_KEY = os.environ.get('MEILI_MASTER_KEY', 'remora_master_key_2026')
 
 try:
     meili_client = meilisearch.Client(MEILI_HOST, MEILI_KEY)
     meili_client.health()
     MEILI_AVAILABLE = True
-except:
+    # Create content index if not exists
+    try:
+        meili_client.create_index('content', {'primaryKey': 'content_id'})
+    except:
+        pass
+    # Configure index settings
+    content_index = meili_client.index('content')
+    content_index.update_searchable_attributes(['title', 'description', 'content'])
+    content_index.update_filterable_attributes(['type', 'language', 'domain'])
+    content_index.update_sortable_attributes(['crawled_at'])
+except Exception as e:
     MEILI_AVAILABLE = False
     meili_client = None
+    print(f"Meilisearch not available: {e}")
+
+# Redis connection for webhook queue
+REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+    redis_client.ping()
+    REDIS_AVAILABLE = True
+except Exception as e:
+    REDIS_AVAILABLE = False
+    redis_client = None
+    print(f"Redis not available: {e}")
 
 # Create the main app
 app = FastAPI(title="Remora API", description="API-first search engine for AI agents")
@@ -48,13 +78,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Rate Limiting Tiers
-RATE_LIMITS = {
-    "free": 100,      # 100 requests/day
-    "pro": 10000,     # 10K requests/day
-    "enterprise": -1  # Unlimited (-1)
-}
-
 # ==================== Models ====================
 
 class User(BaseModel):
@@ -63,7 +86,6 @@ class User(BaseModel):
     email: str
     name: str
     picture: Optional[str] = None
-    tier: str = "free"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserSession(BaseModel):
@@ -79,8 +101,7 @@ class APIKey(BaseModel):
     user_id: str
     name: str
     key_hash: str
-    prefix: str  # First 8 chars for display
-    tier: str = "free"
+    prefix: str
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_used: Optional[datetime] = None
@@ -92,7 +113,6 @@ class APIKeyResponse(BaseModel):
     key_id: str
     name: str
     prefix: str
-    tier: str
     is_active: bool
     created_at: datetime
     last_used: Optional[datetime] = None
@@ -100,9 +120,8 @@ class APIKeyResponse(BaseModel):
 class APIKeyCreatedResponse(BaseModel):
     key_id: str
     name: str
-    api_key: str  # Only returned on creation
+    api_key: str
     prefix: str
-    tier: str
     created_at: datetime
 
 class Agent(BaseModel):
@@ -143,6 +162,8 @@ class Webhook(BaseModel):
     secret: str
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    delivery_count: int = 0
+    last_delivery: Optional[datetime] = None
 
 class WebhookCreate(BaseModel):
     name: str
@@ -186,17 +207,30 @@ class CrawledContent(BaseModel):
     description: Optional[str] = None
     content: str
     structured_data: Dict[str, Any] = {}
+    domain: str
     crawled_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class CrawlRequest(BaseModel):
+    url: str
+    extract_links: bool = False
+
+class WebhookDelivery(BaseModel):
+    delivery_id: str
+    webhook_id: str
+    event: str
+    payload: Dict[str, Any]
+    status: str = "pending"
+    attempts: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    delivered_at: Optional[datetime] = None
 
 # ==================== Auth Helpers ====================
 
 async def get_current_user(request: Request) -> User:
     """Get current user from session token (cookie or header)"""
-    # Try cookie first
     session_token = request.cookies.get("session_token")
     
-    # Fallback to Authorization header
     if not session_token:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
@@ -205,7 +239,6 @@ async def get_current_user(request: Request) -> User:
     if not session_token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    # Find session
     session_doc = await db.user_sessions.find_one(
         {"session_token": session_token},
         {"_id": 0}
@@ -214,7 +247,6 @@ async def get_current_user(request: Request) -> User:
     if not session_doc:
         raise HTTPException(status_code=401, detail="Invalid session")
     
-    # Check expiry
     expires_at = session_doc["expires_at"]
     if isinstance(expires_at, str):
         expires_at = datetime.fromisoformat(expires_at)
@@ -223,7 +255,6 @@ async def get_current_user(request: Request) -> User:
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Session expired")
     
-    # Get user
     user_doc = await db.users.find_one(
         {"user_id": session_doc["user_id"]},
         {"_id": 0}
@@ -232,7 +263,6 @@ async def get_current_user(request: Request) -> User:
     if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
     
-    # Parse datetime
     if isinstance(user_doc.get("created_at"), str):
         user_doc["created_at"] = datetime.fromisoformat(user_doc["created_at"])
     
@@ -255,7 +285,6 @@ async def get_user_from_api_key(request: Request) -> Optional[User]:
     if not key_doc:
         return None
     
-    # Update last used
     await db.api_keys.update_one(
         {"key_hash": key_hash},
         {"$set": {"last_used": datetime.now(timezone.utc).isoformat()}}
@@ -274,25 +303,8 @@ async def get_user_from_api_key(request: Request) -> Optional[User]:
     
     return User(**user_doc)
 
-async def check_rate_limit(user: User, key_id: str) -> bool:
-    """Check if user is within rate limit"""
-    tier = user.tier
-    limit = RATE_LIMITS.get(tier, 100)
-    
-    if limit == -1:  # Unlimited
-        return True
-    
-    # Count today's requests
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    count = await db.usage_records.count_documents({
-        "key_id": key_id,
-        "timestamp": {"$gte": today_start.isoformat()}
-    })
-    
-    return count < limit
-
 async def record_usage(key_id: str, user_id: str, endpoint: str, method: str, status_code: int, response_time_ms: int):
-    """Record API usage"""
+    """Record API usage - free for now, just tracking"""
     record = UsageRecord(
         record_id=f"usage_{uuid.uuid4().hex[:12]}",
         key_id=key_id,
@@ -305,6 +317,184 @@ async def record_usage(key_id: str, user_id: str, endpoint: str, method: str, st
     doc = record.model_dump()
     doc["timestamp"] = doc["timestamp"].isoformat()
     await db.usage_records.insert_one(doc)
+
+# ==================== Webhook Queue Helpers ====================
+
+async def queue_webhook_delivery(event: str, payload: Dict[str, Any], user_id: str):
+    """Queue webhook deliveries for all matching subscriptions"""
+    if not REDIS_AVAILABLE:
+        logger.warning("Redis not available, webhook delivery skipped")
+        return
+    
+    webhooks = await db.webhooks.find(
+        {"user_id": user_id, "is_active": True, "events": event},
+        {"_id": 0}
+    ).to_list(100)
+    
+    for webhook in webhooks:
+        delivery = {
+            "delivery_id": f"del_{uuid.uuid4().hex[:12]}",
+            "webhook_id": webhook["webhook_id"],
+            "url": webhook["url"],
+            "secret": webhook["secret"],
+            "event": event,
+            "payload": payload,
+            "attempts": 0,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        redis_client.lpush("webhook_queue", json.dumps(delivery))
+    
+    logger.info(f"Queued {len(webhooks)} webhook deliveries for event: {event}")
+
+async def process_webhook_queue():
+    """Process webhook delivery queue (background task)"""
+    if not REDIS_AVAILABLE:
+        return
+    
+    while True:
+        try:
+            item = redis_client.rpop("webhook_queue")
+            if not item:
+                await asyncio.sleep(1)
+                continue
+            
+            delivery = json.loads(item)
+            
+            # Sign the payload
+            signature = hashlib.sha256(
+                (delivery["secret"] + json.dumps(delivery["payload"])).encode()
+            ).hexdigest()
+            
+            headers = {
+                "Content-Type": "application/json",
+                "X-Remora-Event": delivery["event"],
+                "X-Remora-Signature": signature,
+                "X-Remora-Delivery": delivery["delivery_id"]
+            }
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    delivery["url"],
+                    json=delivery["payload"],
+                    headers=headers
+                )
+                
+                if response.status_code >= 200 and response.status_code < 300:
+                    # Success - update webhook stats
+                    await db.webhooks.update_one(
+                        {"webhook_id": delivery["webhook_id"]},
+                        {
+                            "$inc": {"delivery_count": 1},
+                            "$set": {"last_delivery": datetime.now(timezone.utc).isoformat()}
+                        }
+                    )
+                    logger.info(f"Webhook delivered: {delivery['delivery_id']}")
+                else:
+                    # Failed - retry if attempts < 3
+                    delivery["attempts"] += 1
+                    if delivery["attempts"] < 3:
+                        redis_client.lpush("webhook_queue", json.dumps(delivery))
+                        logger.warning(f"Webhook delivery failed, retrying: {delivery['delivery_id']}")
+                    else:
+                        logger.error(f"Webhook delivery failed permanently: {delivery['delivery_id']}")
+                        
+        except Exception as e:
+            logger.error(f"Webhook processing error: {e}")
+            await asyncio.sleep(1)
+
+# ==================== Web Crawler ====================
+
+async def crawl_url(url: str) -> Dict[str, Any]:
+    """Crawl a URL and extract structured data"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                "User-Agent": "Remora/1.0 (AI Agent Search Engine; https://remora.info)"
+            })
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'lxml')
+            
+            # Extract title
+            title = ""
+            if soup.title:
+                title = soup.title.string or ""
+            elif soup.find('h1'):
+                title = soup.find('h1').get_text(strip=True)
+            
+            # Extract description
+            description = ""
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if meta_desc:
+                description = meta_desc.get('content', '')
+            elif soup.find('meta', attrs={'property': 'og:description'}):
+                description = soup.find('meta', attrs={'property': 'og:description'}).get('content', '')
+            
+            # Extract main content
+            content = ""
+            # Try common content containers
+            for selector in ['article', 'main', '.content', '#content', '.post-content', '.entry-content']:
+                element = soup.select_one(selector)
+                if element:
+                    content = element.get_text(separator=' ', strip=True)
+                    break
+            
+            if not content:
+                # Fallback to body text
+                for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header']):
+                    tag.decompose()
+                content = soup.get_text(separator=' ', strip=True)
+            
+            # Limit content length
+            content = content[:10000] if len(content) > 10000 else content
+            
+            # Extract structured data (JSON-LD, microdata, etc.)
+            structured_data = {}
+            
+            # JSON-LD
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    ld_data = json.loads(script.string)
+                    if isinstance(ld_data, dict):
+                        structured_data['json_ld'] = ld_data
+                except:
+                    pass
+            
+            # Open Graph
+            og_data = {}
+            for meta in soup.find_all('meta', attrs={'property': lambda x: x and x.startswith('og:')}):
+                key = meta.get('property', '').replace('og:', '')
+                og_data[key] = meta.get('content', '')
+            if og_data:
+                structured_data['open_graph'] = og_data
+            
+            # Detect type and language
+            lang = soup.html.get('lang', 'en') if soup.html else 'en'
+            doc_type = 'webpage'
+            if soup.find('code') or soup.find('pre'):
+                doc_type = 'documentation'
+            elif soup.find('article'):
+                doc_type = 'article'
+            
+            structured_data['type'] = doc_type
+            structured_data['language'] = lang[:2]
+            
+            # Extract domain
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            
+            return {
+                "url": url,
+                "title": title.strip()[:500],
+                "description": description.strip()[:1000],
+                "content": content,
+                "structured_data": structured_data,
+                "domain": domain
+            }
+            
+    except Exception as e:
+        logger.error(f"Crawl error for {url}: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to crawl URL: {str(e)}")
 
 # ==================== Auth Routes ====================
 
@@ -320,7 +510,6 @@ async def create_session(request: Request, response: Response):
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
     
-    # Get user data from Emergent Auth
     async with aiohttp.ClientSession() as http_session:
         async with http_session.get(
             "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
@@ -333,7 +522,6 @@ async def create_session(request: Request, response: Response):
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     session_token = auth_data.get("session_token")
     
-    # Check if user exists
     existing_user = await db.users.find_one(
         {"email": auth_data["email"]},
         {"_id": 0}
@@ -341,7 +529,6 @@ async def create_session(request: Request, response: Response):
     
     if existing_user:
         user_id = existing_user["user_id"]
-        # Update user info
         await db.users.update_one(
             {"user_id": user_id},
             {"$set": {
@@ -350,19 +537,16 @@ async def create_session(request: Request, response: Response):
             }}
         )
     else:
-        # Create new user
         user = User(
             user_id=user_id,
             email=auth_data["email"],
             name=auth_data.get("name", "User"),
-            picture=auth_data.get("picture"),
-            tier="free"
+            picture=auth_data.get("picture")
         )
         doc = user.model_dump()
         doc["created_at"] = doc["created_at"].isoformat()
         await db.users.insert_one(doc)
     
-    # Create session
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     session = UserSession(
         user_id=user_id,
@@ -373,11 +557,9 @@ async def create_session(request: Request, response: Response):
     session_doc["expires_at"] = session_doc["expires_at"].isoformat()
     session_doc["created_at"] = session_doc["created_at"].isoformat()
     
-    # Delete old sessions for user
     await db.user_sessions.delete_many({"user_id": user_id})
     await db.user_sessions.insert_one(session_doc)
     
-    # Set cookie
     response.set_cookie(
         key="session_token",
         value=session_token,
@@ -385,10 +567,9 @@ async def create_session(request: Request, response: Response):
         secure=True,
         samesite="none",
         path="/",
-        max_age=7 * 24 * 60 * 60  # 7 days
+        max_age=7 * 24 * 60 * 60
     )
     
-    # Get user for response
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if isinstance(user_doc.get("created_at"), str):
         user_doc["created_at"] = datetime.fromisoformat(user_doc["created_at"])
@@ -431,7 +612,6 @@ async def list_api_keys(user: User = Depends(get_current_user)):
 @api_router.post("/keys", response_model=APIKeyCreatedResponse)
 async def create_api_key(key_data: APIKeyCreate, user: User = Depends(get_current_user)):
     """Create a new API key"""
-    # Generate API key
     api_key = f"rmr_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     prefix = api_key[:12]
@@ -441,8 +621,7 @@ async def create_api_key(key_data: APIKeyCreate, user: User = Depends(get_curren
         user_id=user.user_id,
         name=key_data.name,
         key_hash=key_hash,
-        prefix=prefix,
-        tier=user.tier
+        prefix=prefix
     )
     
     doc = key.model_dump()
@@ -452,9 +631,8 @@ async def create_api_key(key_data: APIKeyCreate, user: User = Depends(get_curren
     return APIKeyCreatedResponse(
         key_id=key.key_id,
         name=key.name,
-        api_key=api_key,  # Only returned once!
+        api_key=api_key,
         prefix=prefix,
-        tier=key.tier,
         created_at=key.created_at
     )
 
@@ -542,22 +720,24 @@ async def delete_agent(agent_id: str, user: User = Depends(get_current_user)):
 
 # ==================== Webhook Routes ====================
 
-@api_router.get("/webhooks", response_model=List[Webhook])
+@api_router.get("/webhooks")
 async def list_webhooks(user: User = Depends(get_current_user)):
     """List all webhooks for current user"""
     webhooks = await db.webhooks.find(
         {"user_id": user.user_id},
-        {"_id": 0, "secret": 0}  # Hide secret in list
+        {"_id": 0, "secret": 0}
     ).to_list(100)
     
     for webhook in webhooks:
-        webhook["secret"] = "***"  # Masked
+        webhook["secret"] = "***"
         if isinstance(webhook.get("created_at"), str):
             webhook["created_at"] = datetime.fromisoformat(webhook["created_at"])
+        if isinstance(webhook.get("last_delivery"), str):
+            webhook["last_delivery"] = datetime.fromisoformat(webhook["last_delivery"])
     
     return webhooks
 
-@api_router.post("/webhooks", response_model=Webhook)
+@api_router.post("/webhooks")
 async def create_webhook(webhook_data: WebhookCreate, user: User = Depends(get_current_user)):
     """Create a new webhook subscription"""
     webhook = Webhook(
@@ -573,7 +753,7 @@ async def create_webhook(webhook_data: WebhookCreate, user: User = Depends(get_c
     doc["created_at"] = doc["created_at"].isoformat()
     await db.webhooks.insert_one(doc)
     
-    return webhook
+    return webhook.model_dump()
 
 @api_router.put("/webhooks/{webhook_id}")
 async def update_webhook(webhook_id: str, webhook_data: WebhookUpdate, user: User = Depends(get_current_user)):
@@ -588,11 +768,12 @@ async def update_webhook(webhook_id: str, webhook_data: WebhookUpdate, user: Use
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Webhook not found")
     
-    webhook_doc = await db.webhooks.find_one({"webhook_id": webhook_id}, {"_id": 0})
+    webhook_doc = await db.webhooks.find_one({"webhook_id": webhook_id}, {"_id": 0, "secret": 0})
+    webhook_doc["secret"] = "***"
     if isinstance(webhook_doc.get("created_at"), str):
         webhook_doc["created_at"] = datetime.fromisoformat(webhook_doc["created_at"])
     
-    return Webhook(**webhook_doc)
+    return webhook_doc
 
 @api_router.delete("/webhooks/{webhook_id}")
 async def delete_webhook(webhook_id: str, user: User = Depends(get_current_user)):
@@ -607,35 +788,29 @@ async def delete_webhook(webhook_id: str, user: User = Depends(get_current_user)
     
     return {"message": "Webhook deleted"}
 
-# ==================== Search API (Agent Query API) ====================
+# ==================== Search API ====================
 
 @api_router.post("/search", response_model=SearchResult)
-async def agent_search(query: SearchQuery, request: Request):
+async def agent_search(query: SearchQuery, request: Request, background_tasks: BackgroundTasks):
     """
     Agent Query API - accepts structured JSON queries, returns JSON results.
-    Requires API key authentication via X-API-Key header.
+    FREE for everyone - just tracking usage.
     """
     import time
     start_time = time.time()
     
-    # Get user from API key
     user = await get_user_from_api_key(request)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     
-    # Get API key for rate limiting
     api_key = request.headers.get("X-API-Key")
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     key_doc = await db.api_keys.find_one({"key_hash": key_hash}, {"_id": 0})
     
-    # Check rate limit
-    if not await check_rate_limit(user, key_doc["key_id"]):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    
     results = []
     total = 0
     
-    # Try Meilisearch if available
+    # Use Meilisearch if available
     if MEILI_AVAILABLE and meili_client:
         try:
             index = meili_client.index("content")
@@ -657,7 +832,6 @@ async def agent_search(query: SearchQuery, request: Request):
     # Fallback to MongoDB text search
     if not results:
         try:
-            # Ensure text index exists
             await db.crawled_content.create_index([("title", "text"), ("content", "text"), ("description", "text")])
             
             mongo_query = {"$text": {"$search": query.query}}
@@ -678,7 +852,7 @@ async def agent_search(query: SearchQuery, request: Request):
     
     processing_time = int((time.time() - start_time) * 1000)
     
-    # Record usage
+    # Record usage (free - just tracking)
     await record_usage(
         key_id=key_doc["key_id"],
         user_id=user.user_id,
@@ -688,6 +862,14 @@ async def agent_search(query: SearchQuery, request: Request):
         response_time_ms=processing_time
     )
     
+    # Queue webhook notifications
+    background_tasks.add_task(
+        queue_webhook_delivery,
+        "search.complete",
+        {"query": query.query, "total": total, "processing_time_ms": processing_time},
+        user.user_id
+    )
+    
     return SearchResult(
         results=results,
         total=total,
@@ -695,95 +877,7 @@ async def agent_search(query: SearchQuery, request: Request):
         processing_time_ms=processing_time
     )
 
-# ==================== Usage & Analytics Routes ====================
-
-@api_router.get("/usage/stats")
-async def get_usage_stats(user: User = Depends(get_current_user)):
-    """Get usage statistics for current user"""
-    # Today's stats
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    today_count = await db.usage_records.count_documents({
-        "user_id": user.user_id,
-        "timestamp": {"$gte": today_start.isoformat()}
-    })
-    
-    # This week's stats
-    week_start = today_start - timedelta(days=today_start.weekday())
-    week_count = await db.usage_records.count_documents({
-        "user_id": user.user_id,
-        "timestamp": {"$gte": week_start.isoformat()}
-    })
-    
-    # This month's stats
-    month_start = today_start.replace(day=1)
-    month_count = await db.usage_records.count_documents({
-        "user_id": user.user_id,
-        "timestamp": {"$gte": month_start.isoformat()}
-    })
-    
-    # Total stats
-    total_count = await db.usage_records.count_documents({"user_id": user.user_id})
-    
-    # Get daily breakdown for last 7 days
-    daily_stats = []
-    for i in range(7):
-        day_start = today_start - timedelta(days=i)
-        day_end = day_start + timedelta(days=1)
-        count = await db.usage_records.count_documents({
-            "user_id": user.user_id,
-            "timestamp": {
-                "$gte": day_start.isoformat(),
-                "$lt": day_end.isoformat()
-            }
-        })
-        daily_stats.append({
-            "date": day_start.strftime("%Y-%m-%d"),
-            "requests": count
-        })
-    
-    # Average response time
-    pipeline = [
-        {"$match": {"user_id": user.user_id}},
-        {"$group": {"_id": None, "avg_response_time": {"$avg": "$response_time_ms"}}}
-    ]
-    avg_result = await db.usage_records.aggregate(pipeline).to_list(1)
-    avg_response_time = avg_result[0]["avg_response_time"] if avg_result else 0
-    
-    # Rate limit info
-    limit = RATE_LIMITS.get(user.tier, 100)
-    remaining = max(0, limit - today_count) if limit > 0 else -1
-    
-    return {
-        "today": today_count,
-        "this_week": week_count,
-        "this_month": month_count,
-        "total": total_count,
-        "daily_breakdown": list(reversed(daily_stats)),
-        "avg_response_time_ms": round(avg_response_time, 2),
-        "rate_limit": {
-            "tier": user.tier,
-            "limit": limit,
-            "used_today": today_count,
-            "remaining": remaining
-        }
-    }
-
-@api_router.get("/usage/recent")
-async def get_recent_usage(user: User = Depends(get_current_user), limit: int = 20):
-    """Get recent API usage records"""
-    records = await db.usage_records.find(
-        {"user_id": user.user_id},
-        {"_id": 0}
-    ).sort("timestamp", -1).limit(limit).to_list(limit)
-    
-    for record in records:
-        if isinstance(record.get("timestamp"), str):
-            record["timestamp"] = datetime.fromisoformat(record["timestamp"])
-    
-    return records
-
-# ==================== Content Management (Translation Layer) ====================
+# ==================== Content & Crawler Routes ====================
 
 @api_router.get("/content")
 async def list_content(user: User = Depends(get_current_user), limit: int = 50):
@@ -816,28 +910,147 @@ async def get_content(content_id: str, request: Request):
     if not content:
         raise HTTPException(status_code=404, detail="Content not found")
     
-    if isinstance(content.get("crawled_at"), str):
-        content["crawled_at"] = datetime.fromisoformat(content["crawled_at"])
-    if isinstance(content.get("last_updated"), str):
-        content["last_updated"] = datetime.fromisoformat(content["last_updated"])
-    
     return content
+
+@api_router.post("/crawl")
+async def crawl_website(crawl_request: CrawlRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
+    """Crawl a URL and extract structured data"""
+    data = await crawl_url(crawl_request.url)
+    
+    content_id = f"content_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    
+    content = CrawledContent(
+        content_id=content_id,
+        url=data["url"],
+        title=data["title"],
+        description=data["description"],
+        content=data["content"],
+        structured_data=data["structured_data"],
+        domain=data["domain"],
+        crawled_at=now,
+        last_updated=now
+    )
+    
+    doc = content.model_dump()
+    doc["crawled_at"] = doc["crawled_at"].isoformat()
+    doc["last_updated"] = doc["last_updated"].isoformat()
+    
+    # Upsert based on URL
+    await db.crawled_content.update_one(
+        {"url": data["url"]},
+        {"$set": doc},
+        upsert=True
+    )
+    
+    # Index in Meilisearch
+    if MEILI_AVAILABLE and meili_client:
+        try:
+            index = meili_client.index("content")
+            index.add_documents([doc])
+        except Exception as e:
+            logger.warning(f"Failed to index in Meilisearch: {e}")
+    
+    # Queue webhook notification
+    background_tasks.add_task(
+        queue_webhook_delivery,
+        "content.new",
+        {"content_id": content_id, "url": data["url"], "title": data["title"]},
+        user.user_id
+    )
+    
+    return content.model_dump()
+
+# ==================== Usage & Analytics Routes ====================
+
+@api_router.get("/usage/stats")
+async def get_usage_stats(user: User = Depends(get_current_user)):
+    """Get usage statistics for current user - FREE for everyone"""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    today_count = await db.usage_records.count_documents({
+        "user_id": user.user_id,
+        "timestamp": {"$gte": today_start.isoformat()}
+    })
+    
+    week_start = today_start - timedelta(days=today_start.weekday())
+    week_count = await db.usage_records.count_documents({
+        "user_id": user.user_id,
+        "timestamp": {"$gte": week_start.isoformat()}
+    })
+    
+    month_start = today_start.replace(day=1)
+    month_count = await db.usage_records.count_documents({
+        "user_id": user.user_id,
+        "timestamp": {"$gte": month_start.isoformat()}
+    })
+    
+    total_count = await db.usage_records.count_documents({"user_id": user.user_id})
+    
+    daily_stats = []
+    for i in range(7):
+        day_start = today_start - timedelta(days=i)
+        day_end = day_start + timedelta(days=1)
+        count = await db.usage_records.count_documents({
+            "user_id": user.user_id,
+            "timestamp": {
+                "$gte": day_start.isoformat(),
+                "$lt": day_end.isoformat()
+            }
+        })
+        daily_stats.append({
+            "date": day_start.strftime("%Y-%m-%d"),
+            "requests": count
+        })
+    
+    pipeline = [
+        {"$match": {"user_id": user.user_id}},
+        {"$group": {"_id": None, "avg_response_time": {"$avg": "$response_time_ms"}}}
+    ]
+    avg_result = await db.usage_records.aggregate(pipeline).to_list(1)
+    avg_response_time = avg_result[0]["avg_response_time"] if avg_result else 0
+    
+    return {
+        "today": today_count,
+        "this_week": week_count,
+        "this_month": month_count,
+        "total": total_count,
+        "daily_breakdown": list(reversed(daily_stats)),
+        "avg_response_time_ms": round(avg_response_time, 2),
+        "plan": "free",
+        "note": "Free for everyone! We're just tracking usage for now."
+    }
+
+@api_router.get("/usage/recent")
+async def get_recent_usage(user: User = Depends(get_current_user), limit: int = 20):
+    """Get recent API usage records"""
+    records = await db.usage_records.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    for record in records:
+        if isinstance(record.get("timestamp"), str):
+            record["timestamp"] = datetime.fromisoformat(record["timestamp"])
+    
+    return records
 
 # ==================== Health & Status ====================
 
 @api_router.get("/")
 async def root():
-    return {"message": "Remora API - Search Engine for AI Agents", "version": "1.0.0"}
+    return {"message": "Remora API - Search Engine for AI Agents", "version": "1.1.0"}
 
 @api_router.get("/health")
 async def health_check():
     """Health check endpoint"""
-    health = {
+    return {
         "status": "healthy",
         "database": "connected",
-        "meilisearch": "connected" if MEILI_AVAILABLE else "unavailable"
+        "meilisearch": "connected" if MEILI_AVAILABLE else "unavailable",
+        "redis": "connected" if REDIS_AVAILABLE else "unavailable",
+        "pricing": "free_for_all"
     }
-    return health
 
 # ==================== Sample Data Seeding ====================
 
@@ -851,11 +1064,8 @@ async def seed_sample_data():
             "title": "asyncio — Asynchronous I/O",
             "description": "asyncio is a library to write concurrent code using async/await syntax.",
             "content": "asyncio is a library to write concurrent code using the async/await syntax. It is used as a foundation for multiple Python asynchronous frameworks that provide high-performance network and web-servers, database connection libraries, distributed task queues, etc.",
-            "structured_data": {
-                "language": "python",
-                "type": "documentation",
-                "topics": ["async", "concurrency", "networking"]
-            },
+            "structured_data": {"language": "python", "type": "documentation", "topics": ["async", "concurrency", "networking"]},
+            "domain": "docs.python.org",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -865,11 +1075,8 @@ async def seed_sample_data():
             "title": "React Documentation - Quick Start",
             "description": "Learn React with official documentation and examples.",
             "content": "React lets you build user interfaces out of individual pieces called components. Create your own React components like Thumbnail, LikeButton, and Video. Then combine them into entire screens, pages, and apps.",
-            "structured_data": {
-                "language": "javascript",
-                "type": "documentation",
-                "topics": ["react", "frontend", "components", "ui"]
-            },
+            "structured_data": {"language": "javascript", "type": "documentation", "topics": ["react", "frontend", "components", "ui"]},
+            "domain": "react.dev",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -879,11 +1086,8 @@ async def seed_sample_data():
             "title": "FastAPI - Modern Python Web Framework",
             "description": "FastAPI framework, high performance, easy to learn, fast to code, ready for production.",
             "content": "FastAPI is a modern, fast (high-performance), web framework for building APIs with Python 3.7+ based on standard Python type hints. Very high performance, on par with NodeJS and Go. Fast to code, fewer bugs, intuitive, easy, short, robust, standards-based.",
-            "structured_data": {
-                "language": "python",
-                "type": "framework",
-                "topics": ["api", "web", "backend", "rest"]
-            },
+            "structured_data": {"language": "python", "type": "framework", "topics": ["api", "web", "backend", "rest"]},
+            "domain": "fastapi.tiangolo.com",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -893,11 +1097,8 @@ async def seed_sample_data():
             "title": "MongoDB Manual - NoSQL Database",
             "description": "MongoDB is a document database designed for ease of application development and scaling.",
             "content": "MongoDB is a document database with the scalability and flexibility that you want with the querying and indexing that you need. MongoDB stores data in flexible, JSON-like documents, meaning fields can vary from document to document.",
-            "structured_data": {
-                "language": "javascript",
-                "type": "database",
-                "topics": ["nosql", "database", "documents", "json"]
-            },
+            "structured_data": {"language": "javascript", "type": "database", "topics": ["nosql", "database", "documents", "json"]},
+            "domain": "mongodb.com",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -907,11 +1108,8 @@ async def seed_sample_data():
             "title": "Kubernetes Documentation",
             "description": "Kubernetes is an open-source system for automating deployment, scaling, and management of containerized applications.",
             "content": "Kubernetes, also known as K8s, is an open-source system for automating deployment, scaling, and management of containerized applications. It groups containers that make up an application into logical units for easy management and discovery.",
-            "structured_data": {
-                "language": "yaml",
-                "type": "infrastructure",
-                "topics": ["containers", "orchestration", "devops", "cloud"]
-            },
+            "structured_data": {"language": "yaml", "type": "infrastructure", "topics": ["containers", "orchestration", "devops", "cloud"]},
+            "domain": "kubernetes.io",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -921,11 +1119,8 @@ async def seed_sample_data():
             "title": "OpenAI API Documentation",
             "description": "Build AI-powered applications using GPT-4, DALL-E, and other models.",
             "content": "The OpenAI API can be applied to virtually any task that requires understanding or generating natural language and code. We offer a range of models with different capabilities and price points, as well as the ability to fine-tune custom models.",
-            "structured_data": {
-                "language": "python",
-                "type": "api",
-                "topics": ["ai", "llm", "gpt", "machine-learning"]
-            },
+            "structured_data": {"language": "python", "type": "api", "topics": ["ai", "llm", "gpt", "machine-learning"]},
+            "domain": "openai.com",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -935,11 +1130,8 @@ async def seed_sample_data():
             "title": "Stripe API Reference",
             "description": "Complete reference documentation for the Stripe API.",
             "content": "The Stripe API is organized around REST. Our API has predictable resource-oriented URLs, accepts form-encoded request bodies, returns JSON-encoded responses, and uses standard HTTP response codes, authentication, and verbs.",
-            "structured_data": {
-                "language": "curl",
-                "type": "api",
-                "topics": ["payments", "fintech", "rest", "webhooks"]
-            },
+            "structured_data": {"language": "curl", "type": "api", "topics": ["payments", "fintech", "rest", "webhooks"]},
+            "domain": "stripe.com",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         },
@@ -949,23 +1141,24 @@ async def seed_sample_data():
             "title": "Tailwind CSS Documentation",
             "description": "A utility-first CSS framework for rapidly building custom designs.",
             "content": "Tailwind CSS is a utility-first CSS framework packed with classes like flex, pt-4, text-center and rotate-90 that can be composed to build any design, directly in your markup. It's fast, flexible, and reliable with zero-runtime.",
-            "structured_data": {
-                "language": "css",
-                "type": "framework",
-                "topics": ["css", "frontend", "styling", "utility"]
-            },
+            "structured_data": {"language": "css", "type": "framework", "topics": ["css", "frontend", "styling", "utility"]},
+            "domain": "tailwindcss.com",
             "crawled_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
     ]
     
-    # Clear existing content
     await db.crawled_content.delete_many({})
-    
-    # Insert sample content
     await db.crawled_content.insert_many(sample_content)
     
-    # Create text index for searching
+    # Index in Meilisearch
+    if MEILI_AVAILABLE and meili_client:
+        try:
+            index = meili_client.index("content")
+            index.add_documents(sample_content)
+        except Exception as e:
+            logger.warning(f"Failed to index in Meilisearch: {e}")
+    
     try:
         await db.crawled_content.create_index([("title", "text"), ("content", "text"), ("description", "text")])
     except:
@@ -983,6 +1176,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Start webhook processor on startup
+@app.on_event("startup")
+async def startup_event():
+    if REDIS_AVAILABLE:
+        asyncio.create_task(process_webhook_queue())
+        logger.info("Webhook processor started")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

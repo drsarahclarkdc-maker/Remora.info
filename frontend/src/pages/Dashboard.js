@@ -81,8 +81,8 @@ const Dashboard = () => {
               Here's what's happening with your API usage.
             </p>
           </div>
-          <Badge variant="outline" className="w-fit px-4 py-1.5 text-xs font-mono uppercase tracking-wider">
-            {user?.tier} Tier
+          <Badge variant="outline" className="w-fit px-4 py-1.5 text-xs font-mono uppercase tracking-wider bg-primary/10 text-primary border-primary/30">
+            Free Plan
           </Badge>
         </div>
 
@@ -101,9 +101,7 @@ const Dashboard = () => {
               </div>
               {stats?.rate_limit && (
                 <p className="text-xs text-muted-foreground mt-3">
-                  {stats.rate_limit.remaining >= 0 
-                    ? `${stats.rate_limit.remaining} remaining` 
-                    : 'Unlimited'}
+                  Free plan • Unlimited
                 </p>
               )}
             </CardContent>

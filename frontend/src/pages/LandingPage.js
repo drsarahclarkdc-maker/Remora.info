@@ -85,29 +85,11 @@ const LandingPage = () => {
     {
       name: 'Free',
       price: '$0',
-      period: '/month',
-      requests: '100 requests/day',
-      features: ['Basic search API', 'Agent registration', 'Community support'],
-      cta: 'Get Started',
-      popular: false
-    },
-    {
-      name: 'Pro',
-      price: '$49',
-      period: '/month',
-      requests: '10K requests/day',
-      features: ['Everything in Free', 'Webhook subscriptions', 'Priority support', 'Advanced analytics'],
-      cta: 'Start Free Trial',
-      popular: true
-    },
-    {
-      name: 'Enterprise',
-      price: 'Custom',
-      period: '',
+      period: 'forever',
       requests: 'Unlimited requests',
-      features: ['Everything in Pro', 'Custom integrations', 'SLA guarantee', 'Dedicated support'],
-      cta: 'Contact Sales',
-      popular: false
+      features: ['Full search API', 'Agent registration', 'Webhook subscriptions', 'Web crawler', 'Usage analytics'],
+      cta: 'Get Started Free',
+      popular: true
     }
   ];
 
@@ -283,14 +265,14 @@ X-API-Key: rmr_aBc123...
             transition={{ duration: 0.4 }}
           >
             <h2 className="text-3xl md:text-5xl font-semibold tracking-tight mb-4">
-              Simple Pricing
+              Free for Everyone
             </h2>
             <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-              Start free, scale as you grow. No hidden fees.
+              No limits, no tiers, no credit card. Just build.
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+          <div className="max-w-md mx-auto">
             {pricingTiers.map((tier, index) => (
               <motion.div
                 key={tier.name}
@@ -302,12 +284,12 @@ X-API-Key: rmr_aBc123...
                 <Card className={`h-full ${tier.popular ? 'border-primary/50 glow' : 'border-border/50'}`}>
                   <CardContent className="p-6">
                     {tier.popular && (
-                      <Badge className="mb-4 bg-primary text-primary-foreground">Most Popular</Badge>
+                      <Badge className="mb-4 bg-primary text-primary-foreground">Currently Free</Badge>
                     )}
                     <h3 className="text-xl font-semibold mb-2">{tier.name}</h3>
                     <div className="mb-4">
                       <span className="text-4xl font-bold">{tier.price}</span>
-                      <span className="text-muted-foreground">{tier.period}</span>
+                      <span className="text-muted-foreground"> {tier.period}</span>
                     </div>
                     <p className="text-sm text-muted-foreground mb-6">{tier.requests}</p>
                     <ul className="space-y-3 mb-6">

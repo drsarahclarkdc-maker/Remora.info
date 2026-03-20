@@ -10,21 +10,12 @@ import {
   Mail, 
   Shield, 
   LogOut, 
-  ExternalLink,
-  Crown,
-  Zap
+  Zap,
+  Sparkles
 } from 'lucide-react';
-
-const RATE_LIMITS = {
-  free: { limit: 100, price: 'Free' },
-  pro: { limit: 10000, price: '$49/mo' },
-  enterprise: { limit: -1, price: 'Custom' }
-};
 
 const Settings = () => {
   const { user, logout } = useAuth();
-
-  const currentPlan = RATE_LIMITS[user?.tier || 'free'];
 
   return (
     <DashboardLayout>
@@ -33,7 +24,7 @@ const Settings = () => {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
           <p className="text-muted-foreground mt-1">
-            Manage your account and subscription.
+            Manage your account settings.
           </p>
         </div>
 
@@ -74,59 +65,39 @@ const Settings = () => {
           </CardContent>
         </Card>
 
-        {/* Subscription Card */}
+        {/* Plan Card */}
         <Card className="bg-card/50 border-border/50">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <Crown className="w-5 h-5" />
-              Subscription
+              <Sparkles className="w-5 h-5" />
+              Your Plan
             </CardTitle>
-            <CardDescription>Your current plan and usage limits</CardDescription>
+            <CardDescription>Current usage plan</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex items-center justify-between p-4 rounded-lg bg-muted/30">
+          <CardContent>
+            <div className="flex items-center justify-between p-4 rounded-lg bg-primary/5 border border-primary/20">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
                   <Zap className="w-6 h-6 text-primary" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h4 className="font-semibold capitalize">{user?.tier} Plan</h4>
-                    <Badge variant={user?.tier === 'enterprise' ? 'default' : 'outline'}>
-                      Current
-                    </Badge>
+                    <h4 className="font-semibold">Free Plan</h4>
+                    <Badge className="bg-primary text-primary-foreground">Active</Badge>
                   </div>
                   <p className="text-sm text-muted-foreground mt-0.5">
-                    {currentPlan.limit === -1 
-                      ? 'Unlimited requests per day'
-                      : `${currentPlan.limit.toLocaleString()} requests per day`}
+                    Unlimited requests • Full API access
                   </p>
                 </div>
               </div>
               <div className="text-right">
-                <p className="font-bold text-lg">{currentPlan.price}</p>
+                <p className="font-bold text-lg text-primary">$0</p>
+                <p className="text-xs text-muted-foreground">forever</p>
               </div>
             </div>
-
-            {user?.tier !== 'enterprise' && (
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Need more requests? Upgrade your plan to unlock higher limits and more features.
-                </p>
-                <div className="flex gap-3">
-                  {user?.tier === 'free' && (
-                    <Button data-testid="upgrade-pro-btn">
-                      Upgrade to Pro
-                      <ExternalLink className="w-4 h-4 ml-2" />
-                    </Button>
-                  )}
-                  <Button variant="outline" data-testid="contact-sales-btn">
-                    Contact Sales
-                    <ExternalLink className="w-4 h-4 ml-2" />
-                  </Button>
-                </div>
-              </div>
-            )}
+            <p className="text-sm text-muted-foreground mt-4">
+              Remora is currently free for everyone. We're just tracking usage to understand how the API is being used.
+            </p>
           </CardContent>
         </Card>
 

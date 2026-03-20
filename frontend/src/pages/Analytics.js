@@ -2,15 +2,12 @@ import { useState, useEffect } from 'react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
-import { useAuth } from '@/context/AuthContext';
 import {
   BarChart3,
   TrendingUp,
   Clock,
   Activity,
-  Zap,
-  AlertCircle
+  Zap
 } from 'lucide-react';
 import {
   AreaChart,
@@ -30,7 +27,6 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const Analytics = () => {
-  const { user } = useAuth();
   const [stats, setStats] = useState(null);
   const [recentUsage, setRecentUsage] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -54,16 +50,6 @@ const Analytics = () => {
 
     fetchData();
   }, []);
-
-  const RATE_LIMITS = {
-    free: 100,
-    pro: 10000,
-    enterprise: -1
-  };
-
-  const limit = RATE_LIMITS[user?.tier || 'free'];
-  const usedToday = stats?.today || 0;
-  const usagePercent = limit > 0 ? Math.min((usedToday / limit) * 100, 100) : 0;
 
   // Group recent usage by endpoint
   const endpointStats = recentUsage.reduce((acc, record) => {
@@ -119,40 +105,23 @@ const Analytics = () => {
           </p>
         </div>
 
-        {/* Rate Limit Card */}
-        <Card className={`border-border/50 ${usagePercent > 80 ? 'bg-warning/5 border-warning/30' : 'bg-card/50'}`}>
+        {/* Plan Status Card */}
+        <Card className="bg-primary/5 border-primary/20">
           <CardContent className="p-6">
             <div className="flex items-start justify-between">
               <div>
                 <div className="flex items-center gap-2 mb-2">
-                  <h3 className="font-semibold">Rate Limit Status</h3>
-                  <Badge variant={user?.tier === 'enterprise' ? 'default' : 'outline'}>
-                    {user?.tier} tier
-                  </Badge>
+                  <h3 className="font-semibold">Free Plan</h3>
+                  <Badge className="bg-primary text-primary-foreground">Active</Badge>
                 </div>
-                <p className="text-sm text-muted-foreground mb-4">
-                  {limit === -1 
-                    ? 'Unlimited requests' 
-                    : `${usedToday.toLocaleString()} / ${limit.toLocaleString()} requests used today`}
+                <p className="text-sm text-muted-foreground">
+                  Unlimited requests • Full API access • We're just tracking usage
                 </p>
-                {limit > 0 && (
-                  <Progress value={usagePercent} className="h-2 w-full max-w-md" />
-                )}
               </div>
               <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
-                {usagePercent > 80 ? (
-                  <AlertCircle className="w-6 h-6 text-warning" />
-                ) : (
-                  <Zap className="w-6 h-6 text-primary" />
-                )}
+                <Zap className="w-6 h-6 text-primary" />
               </div>
             </div>
-            {usagePercent > 80 && limit > 0 && (
-              <p className="text-sm text-warning mt-4 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4" />
-                You're approaching your daily limit. Consider upgrading to Pro.
-              </p>
-            )}
           </CardContent>
         </Card>
 

@@ -61,7 +61,6 @@ markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mccabe==0.7.0
 mdurl==0.1.2
-meilisearch==0.40.0
 motor==3.3.1
 multidict==6.7.1
 mypy==1.19.1
@@ -97,7 +96,6 @@ python-jose==3.5.0
 python-multipart==0.0.22
 pytokens==0.4.1
 PyYAML==6.0.3
-redis==7.3.0
 referencing==0.37.0
 regex==2026.2.28
 requests==2.32.5

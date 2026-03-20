@@ -13,8 +13,6 @@ from datetime import datetime, timezone, timedelta
 import secrets
 import hashlib
 import aiohttp
-import meilisearch
-import redis
 import json
 import httpx
 from bs4 import BeautifulSoup
@@ -29,41 +27,8 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Meilisearch connection
-MEILI_HOST = os.environ.get('MEILI_HOST', 'http://127.0.0.1:7700')
-MEILI_KEY = os.environ.get('MEILI_MASTER_KEY', 'remora_master_key_2026')
-
-try:
-    meili_client = meilisearch.Client(MEILI_HOST, MEILI_KEY)
-    meili_client.health()
-    MEILI_AVAILABLE = True
-    # Create content index if not exists
-    try:
-        meili_client.create_index('content', {'primaryKey': 'content_id'})
-    except:
-        pass
-    # Configure index settings
-    content_index = meili_client.index('content')
-    content_index.update_searchable_attributes(['title', 'description', 'content'])
-    content_index.update_filterable_attributes(['type', 'language', 'domain'])
-    content_index.update_sortable_attributes(['crawled_at'])
-except Exception as e:
-    MEILI_AVAILABLE = False
-    meili_client = None
-    print(f"Meilisearch not available: {e}")
-
-# Redis connection for webhook queue
-REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-
-try:
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
-    redis_client.ping()
-    REDIS_AVAILABLE = True
-except Exception as e:
-    REDIS_AVAILABLE = False
-    redis_client = None
-    print(f"Redis not available: {e}")
+# Search uses MongoDB text indexes (no external search service needed)
+# Webhook queue uses MongoDB collection (no external queue service needed)
 
 # Create the main app
 app = FastAPI(title="Remora API", description="API-first search engine for AI agents")
@@ -547,11 +512,7 @@ async def record_usage(key_id: str, user_id: str, endpoint: str, method: str, st
 # ==================== Webhook Queue Helpers ====================
 
 async def queue_webhook_delivery(event: str, payload: Dict[str, Any], user_id: str):
-    """Queue webhook deliveries for all matching subscriptions"""
-    if not REDIS_AVAILABLE:
-        logger.warning("Redis not available, webhook delivery skipped")
-        return
-    
+    """Queue webhook deliveries for all matching subscriptions (MongoDB-based queue)"""
     webhooks = await db.webhooks.find(
         {"user_id": user_id, "is_active": True, "events": event},
         {"_id": 0}
@@ -568,9 +529,10 @@ async def queue_webhook_delivery(event: str, payload: Dict[str, Any], user_id: s
             "event": event,
             "payload": payload,
             "attempts": 0,
+            "status": "pending",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
-        redis_client.lpush("webhook_queue", json.dumps(delivery))
+        await db.webhook_queue.insert_one(delivery)
         
         # Create initial delivery log entry
         log_entry = {
@@ -589,18 +551,19 @@ async def queue_webhook_delivery(event: str, payload: Dict[str, Any], user_id: s
     logger.info(f"Queued {len(webhooks)} webhook deliveries for event: {event}")
 
 async def process_webhook_queue():
-    """Process webhook delivery queue (background task)"""
-    if not REDIS_AVAILABLE:
-        return
-    
+    """Process webhook delivery queue from MongoDB (background task)"""
     while True:
         try:
-            item = redis_client.rpop("webhook_queue")
+            # Find and claim the oldest pending item
+            item = await db.webhook_queue.find_one_and_delete(
+                {"status": "pending"},
+                sort=[("created_at", 1)]
+            )
             if not item:
                 await asyncio.sleep(1)
                 continue
             
-            delivery = json.loads(item)
+            delivery = {k: v for k, v in item.items() if k != "_id"}
             
             # Sign the payload
             signature = hashlib.sha256(
@@ -623,7 +586,6 @@ async def process_webhook_queue():
                     )
                     
                     if response.status_code >= 200 and response.status_code < 300:
-                        # Success - update webhook stats and log
                         await db.webhooks.update_one(
                             {"webhook_id": delivery["webhook_id"]},
                             {
@@ -642,10 +604,10 @@ async def process_webhook_queue():
                         )
                         logger.info(f"Webhook delivered: {delivery['delivery_id']}")
                     else:
-                        # Failed - retry if attempts < 3
                         delivery["attempts"] += 1
                         if delivery["attempts"] < 3:
-                            redis_client.lpush("webhook_queue", json.dumps(delivery))
+                            delivery["status"] = "pending"
+                            await db.webhook_queue.insert_one({k: v for k, v in delivery.items() if k != "_id"})
                             await db.webhook_delivery_logs.update_one(
                                 {"delivery_id": delivery["delivery_id"]},
                                 {"$set": {
@@ -655,7 +617,6 @@ async def process_webhook_queue():
                                     "error_message": f"HTTP {response.status_code}"
                                 }}
                             )
-                            logger.warning(f"Webhook delivery failed, retrying: {delivery['delivery_id']}")
                         else:
                             await db.webhook_delivery_logs.update_one(
                                 {"delivery_id": delivery["delivery_id"]},
@@ -666,12 +627,12 @@ async def process_webhook_queue():
                                     "error_message": f"Failed after 3 attempts: HTTP {response.status_code}"
                                 }}
                             )
-                            logger.error(f"Webhook delivery failed permanently: {delivery['delivery_id']}")
             except Exception as req_error:
                 delivery["attempts"] += 1
                 error_msg = str(req_error)[:200]
                 if delivery["attempts"] < 3:
-                    redis_client.lpush("webhook_queue", json.dumps(delivery))
+                    delivery["status"] = "pending"
+                    await db.webhook_queue.insert_one({k: v for k, v in delivery.items() if k != "_id"})
                     await db.webhook_delivery_logs.update_one(
                         {"delivery_id": delivery["delivery_id"]},
                         {"$set": {
@@ -1142,45 +1103,25 @@ async def agent_search(query: SearchQuery, request: Request, background_tasks: B
     results = []
     total = 0
     
-    # Use Meilisearch if available
-    if MEILI_AVAILABLE and meili_client:
-        try:
-            index = meili_client.index("content")
-            search_params = {"limit": query.max_results * 3}  # Get more for re-ranking
-            
-            if query.filters:
-                filter_parts = []
-                for key, value in query.filters.items():
-                    filter_parts.append(f'{key} = "{value}"')
-                if filter_parts:
-                    search_params["filter"] = " AND ".join(filter_parts)
-            
-            meili_results = index.search(query.query, search_params)
-            results = meili_results.get("hits", [])
-            total = meili_results.get("estimatedTotalHits", 0)
-        except Exception as e:
-            logger.warning(f"Meilisearch error: {e}")
-    
-    # Fallback to MongoDB text search
-    if not results:
-        try:
-            await db.crawled_content.create_index([("title", "text"), ("content", "text"), ("description", "text")])
-            
-            mongo_query = {"$text": {"$search": query.query}}
-            if query.filters:
-                mongo_query.update(query.filters)
-            
-            cursor = db.crawled_content.find(
-                mongo_query,
-                {"_id": 0, "score": {"$meta": "textScore"}}
-            ).sort([("score", {"$meta": "textScore"})]).limit(query.max_results * 3)
-            
-            results = await cursor.to_list(query.max_results * 3)
-            total = len(results)
-        except Exception as e:
-            logger.warning(f"MongoDB search error: {e}")
-            results = []
-            total = 0
+    # MongoDB text search
+    try:
+        await db.crawled_content.create_index([("title", "text"), ("content", "text"), ("description", "text")])
+        
+        mongo_query = {"$text": {"$search": query.query}}
+        if query.filters:
+            mongo_query.update(query.filters)
+        
+        cursor = db.crawled_content.find(
+            mongo_query,
+            {"_id": 0, "score": {"$meta": "textScore"}}
+        ).sort([("score", {"$meta": "textScore"})]).limit(query.max_results * 3)
+        
+        results = await cursor.to_list(query.max_results * 3)
+        total = len(results)
+    except Exception as e:
+        logger.warning(f"MongoDB search error: {e}")
+        results = []
+        total = 0
     
     # Apply advanced ranking
     if results:
@@ -1353,14 +1294,6 @@ async def crawl_website(crawl_request: CrawlRequest, background_tasks: Backgroun
     }
     await db.crawl_history.insert_one(history_entry)
     
-    # Index in Meilisearch
-    if MEILI_AVAILABLE and meili_client:
-        try:
-            index = meili_client.index("content")
-            index.add_documents([doc])
-        except Exception as e:
-            logger.warning(f"Failed to index in Meilisearch: {e}")
-    
     # Queue webhook notification
     event_type = "content.updated" if existing else "content.new"
     background_tasks.add_task(
@@ -1402,12 +1335,6 @@ async def process_bulk_crawl_job(job_id: str, urls: List[str], user_id: str):
                 {"$set": doc},
                 upsert=True
             )
-            
-            if MEILI_AVAILABLE and meili_client:
-                try:
-                    meili_client.index("content").add_documents([doc])
-                except:
-                    pass
             
             completed += 1
             
@@ -1567,9 +1494,6 @@ async def create_scheduled_crawl(schedule_data: ScheduledCrawlCreate, user: User
             upsert=True
         )
         
-        if MEILI_AVAILABLE and meili_client:
-            meili_client.index("content").add_documents([content_doc])
-        
         await db.scheduled_crawls.update_one(
             {"schedule_id": schedule.schedule_id},
             {"$set": {"last_crawl": now.isoformat()}}
@@ -1657,9 +1581,6 @@ async def run_scheduled_crawls():
                         {"$set": content_doc},
                         upsert=True
                     )
-                    
-                    if MEILI_AVAILABLE and meili_client:
-                        meili_client.index("content").add_documents([content_doc])
                     
                     # Calculate next crawl
                     freq = schedule.get("frequency", "daily")
@@ -1820,9 +1741,6 @@ async def create_content_source(source_data: ContentSourceCreate, background_tas
         }
         await db.crawl_history.insert_one(history_entry)
         
-        if MEILI_AVAILABLE and meili_client:
-            meili_client.index("content").add_documents([content_doc])
-        
         await db.content_sources.update_one(
             {"source_id": source.source_id},
             {"$set": {
@@ -1948,9 +1866,6 @@ async def crawl_content_source(source_id: str, user: User = Depends(get_current_
             "crawled_at": now.isoformat()
         }
         await db.crawl_history.insert_one(history_entry)
-        
-        if MEILI_AVAILABLE and meili_client:
-            meili_client.index("content").add_documents([content_doc])
         
         await db.content_sources.update_one(
             {"source_id": source_id},
@@ -2756,8 +2671,8 @@ async def health_check():
     return {
         "status": "healthy",
         "database": "connected",
-        "meilisearch": "connected" if MEILI_AVAILABLE else "unavailable",
-        "redis": "connected" if REDIS_AVAILABLE else "unavailable",
+        "search": "mongodb_text_search",
+        "webhook_queue": "mongodb",
         "pricing": "free_for_all"
     }
 
@@ -2860,14 +2775,6 @@ async def seed_sample_data():
     await db.crawled_content.delete_many({})
     await db.crawled_content.insert_many(sample_content)
     
-    # Index in Meilisearch
-    if MEILI_AVAILABLE and meili_client:
-        try:
-            index = meili_client.index("content")
-            index.add_documents(sample_content)
-        except Exception as e:
-            logger.warning(f"Failed to index in Meilisearch: {e}")
-    
     try:
         await db.crawled_content.create_index([("title", "text"), ("content", "text"), ("description", "text")])
     except:
@@ -2889,9 +2796,14 @@ app.add_middleware(
 # Start webhook processor and scheduled crawl runner on startup
 @app.on_event("startup")
 async def startup_event():
-    if REDIS_AVAILABLE:
-        asyncio.create_task(process_webhook_queue())
-        logger.info("Webhook processor started")
+    asyncio.create_task(process_webhook_queue())
+    logger.info("Webhook processor started")
+    
+    # Ensure text search index exists
+    try:
+        await db.crawled_content.create_index([("title", "text"), ("content", "text"), ("description", "text")])
+    except:
+        pass
     
     # Start scheduled crawl runner
     asyncio.create_task(run_scheduled_crawls())

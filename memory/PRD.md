@@ -29,6 +29,7 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] **Search result ranking improvements** (configurable ranking profiles)
 - [x] **Custom crawl rules per domain** (CSS selectors, path filters, rate limiting)
 - [x] **Team/Organization support** (create orgs, invite members, role-based access)
+- [x] **Stripe billing with credit system** (Free/Starter/Growth/Scale tiers, credit deduction, checkout flow)
 
 ## What's Been Implemented
 
@@ -75,6 +76,15 @@ Build an API-first search engine for AI agents called remora.info with:
 - Organizations (`/organizations`) - Team management
 - Settings/Profile Page (`/settings`)
 
+### Billing & Credit System
+- 1 credit = 1 search, 1 crawl, or 1 content extract
+- Free tier: 3,000 credits/month (auto-provisioned)
+- Paid tiers: Starter ($29/10k), Growth ($99/40k), Scale ($399/200k)
+- Hard block (402) when credits reach 0
+- Stripe Checkout via emergentintegrations library
+- Credits reset every 30 days
+- Usage alert at 80% threshold
+
 ### Infrastructure
 - MongoDB: Data persistence, text search, and webhook queue
 - Background Tasks: Scheduled crawl runner, webhook processor
@@ -102,7 +112,10 @@ Build an API-first search engine for AI agents called remora.info with:
 
 ## Future Enhancements (P2)
 - [ ] Backend refactoring: Break server.py into organized modules
-- [ ] Stripe billing (when ready for paid tiers)
+- [ ] Pay-as-you-go billing ($0.005/credit metered)
+- [ ] Enterprise tier (custom pricing, SLAs)
+- [ ] Usage alerts (email notifications at 80%)
+- [ ] Hard caps / auto-recharge packs
 - [ ] Export functionality
 
 ## Architecture
@@ -133,6 +146,11 @@ Build an API-first search engine for AI agents called remora.info with:
     └── iteration_2.json
 ```
 
-## Test Reports
+- `/api/billing/plans`: List all plans (public)
+- `/api/billing/usage`: Current credits/plan/usage (auth)
+- `/api/billing/checkout`: Create Stripe checkout session (auth)
+- `/api/billing/checkout/status/{session_id}`: Poll payment status (auth)
+- `/api/billing/transactions`: Payment history (auth)
+- `/api/webhook/stripe`: Stripe webhook handler
 - iteration_1.json: Initial feature testing
 - iteration_2.json: Crawl Rules, Search Ranking, Organizations - ALL PASSED (21/21 backend, 100% frontend)

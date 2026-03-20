@@ -2637,17 +2637,26 @@ async def get_checkout_status(session_id: str, request: Request, user: User = De
     """Poll Stripe checkout status and update billing on success"""
     from emergentintegrations.payments.stripe.checkout import StripeCheckout
     
+    # Get existing transaction first
+    txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
     api_key = os.environ.get("STRIPE_API_KEY")
     host_url = str(request.base_url).rstrip("/")
     webhook_url = f"{host_url}/api/webhook/stripe"
     
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
-    checkout_status = await stripe_checkout.get_checkout_status(session_id)
-    
-    # Get existing transaction
-    txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
-    if not txn:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+    try:
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+        checkout_status = await stripe_checkout.get_checkout_status(session_id)
+    except Exception as e:
+        logger.warning(f"Stripe status check error: {e}")
+        return {
+            "status": txn.get("status", "pending"),
+            "payment_status": txn.get("payment_status", "pending"),
+            "amount_total": txn.get("amount", 0),
+            "currency": txn.get("currency", "usd"),
+        }
     
     # Only process if not already completed (prevent double-crediting)
     if txn.get("payment_status") != "paid" and checkout_status.payment_status == "paid":

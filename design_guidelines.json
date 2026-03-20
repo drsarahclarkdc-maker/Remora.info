@@ -1,0 +1,164 @@
+{
+  "identity": {
+    "name": "Remora",
+    "tagline": "The Search Engine for AI Agents",
+    "tone": "Technical, Precision, Invisible Power, Developer-Centric",
+    "aesthetic": "Dark Mode Industrial, Cybernetic Minimalist, High-Density Data",
+    "description": "An API-first platform connecting AI agents to structured world knowledge."
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Manrope, sans-serif",
+      "body": "Inter, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "scale": {
+      "h1": "text-5xl md:text-7xl font-bold tracking-tight leading-none",
+      "h2": "text-3xl md:text-5xl font-semibold tracking-tight",
+      "h3": "text-2xl md:text-3xl font-medium",
+      "body_lg": "text-lg leading-relaxed text-muted-foreground",
+      "body": "text-base leading-normal",
+      "caption": "text-sm text-muted-foreground uppercase tracking-widest"
+    },
+    "rules": [
+      "Headings > 32px MUST use tracking-tight (-0.02em)",
+      "All caps labels MUST use tracking-widest (0.2em)",
+      "Code blocks MUST use JetBrains Mono"
+    ]
+  },
+  "colors": {
+    "theme_mode": "dark",
+    "palette": {
+      "background": "#050505",
+      "foreground": "#FAFAFA",
+      "card": "#0A0A0A",
+      "card_foreground": "#FFFFFF",
+      "primary": "#3B82F6",
+      "primary_foreground": "#FFFFFF",
+      "secondary": "#27272A",
+      "secondary_foreground": "#E4E4E7",
+      "muted": "#18181B",
+      "muted_foreground": "#A1A1AA",
+      "accent": "#2563EB",
+      "accent_foreground": "#FFFFFF",
+      "border": "#27272A",
+      "input": "#27272A",
+      "ring": "#3B82F6"
+    },
+    "gradients": {
+      "hero_glow": "radial-gradient(circle at center, rgba(59, 130, 246, 0.15) 0%, rgba(0, 0, 0, 0) 70%)",
+      "card_hover": "linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 100%)"
+    },
+    "status": {
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444",
+      "info": "#3B82F6"
+    }
+  },
+  "visual_enhancers": {
+    "radius": {
+      "default": "rounded-md",
+      "small": "rounded-sm",
+      "large": "rounded-lg",
+      "full": "rounded-full"
+    },
+    "shadows": {
+      "sm": "0 1px 2px 0 rgba(0, 0, 0, 0.5)",
+      "glow": "0 0 20px -5px rgba(59, 130, 246, 0.3)"
+    },
+    "borders": {
+      "default": "border border-border",
+      "subtle": "border-b border-white/5",
+      "active": "border-primary/50"
+    },
+    "textures": {
+      "noise": "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E\")"
+    }
+  },
+  "layout_strategies": {
+    "dashboard": {
+      "type": "dense_grid",
+      "grid_cols": "grid-cols-12",
+      "gap": "gap-4",
+      "padding": "p-6"
+    },
+    "landing": {
+      "type": "bento_grid",
+      "grid_cols": "grid-cols-1 md:grid-cols-12",
+      "gap": "gap-8",
+      "padding": "px-6 py-24"
+    }
+  },
+  "components": [
+    {
+      "name": "Button",
+      "path": "@/components/ui/button",
+      "style_override": "rounded-md font-medium transition-all active:scale-95 hover:shadow-glow",
+      "variants": ["default", "outline", "ghost", "link"]
+    },
+    {
+      "name": "Card",
+      "path": "@/components/ui/card",
+      "style_override": "bg-card border-border/50 hover:border-primary/30 transition-colors duration-300 rounded-lg",
+      "usage": "Use for all dashboard widgets and feature highlights."
+    },
+    {
+      "name": "Input",
+      "path": "@/components/ui/input",
+      "style_override": "bg-secondary/50 border-transparent focus:border-primary focus:ring-1 focus:ring-primary rounded-md h-10"
+    },
+    {
+      "name": "Badge",
+      "path": "@/components/ui/badge",
+      "style_override": "rounded-sm px-2 py-0.5 text-xs font-mono uppercase tracking-wider"
+    },
+    {
+      "name": "Sonner",
+      "path": "@/components/ui/sonner",
+      "usage": "Use for all toast notifications. Position: bottom-right."
+    }
+  ],
+  "image_assets": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1762279389006-43963a0cee55?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHw0fHxhYnN0cmFjdCUyMG5ldHdvcmslMjBkYXRhJTIwZmxvdyUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3Mzk3ODYwM3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "Abstract neon data lines",
+      "usage": "Hero section background with heavy overlay/opacity reduction."
+    },
+    "feature_network": {
+      "url": "https://images.unsplash.com/photo-1762278805026-9e0e673e5dc4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5ldHdvcmslMjBkYXRhJTIwZmxvdyUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3Mzk3ODYwM3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "Purple and green data streaks",
+      "usage": "Translation Layer feature section."
+    },
+    "feature_api": {
+      "url": "https://images.unsplash.com/photo-1772050138768-2107c6e62a03?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG5ldHdvcmslMjBkYXRhJTIwZmxvdyUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3Mzk3ODYwM3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "Green matrix code rain style",
+      "usage": "Agent Registry feature section."
+    },
+    "feature_analytics": {
+      "url": "https://images.unsplash.com/photo-1772050138764-2b1925e0c6b2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHwzfHxhYnN0cmFjdCUyMG5ldHdvcmslMjBkYXRhJTIwZmxvdyUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3Mzk3ODYwM3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "Wavy abstract lines",
+      "usage": "Analytics dashboard background accent."
+    }
+  },
+  "instructions_to_main_agent": [
+    "FORCE DARK MODE: The app must default to dark mode. Ensure 'dark' class is present on html/body.",
+    "NO GRADIENT TEXT: Do not use gradient text. It looks cheap. Use solid white for primary headings.",
+    "BENTO GRIDS: Use Bento Grids for the feature section on the landing page.",
+    "DASHBOARD LAYOUT: Sidebar (left, fixed, w-64) + Header (top, sticky, h-16) + Main Content (scrollable).",
+    "INTERACTIVITY: Add subtle hover effects to all cards (border color change or slight lift).",
+    "CHARTS: Use Recharts customized to match the dark theme (no default colors). Use the palette colors.",
+    "FORMS: Use Shadcn Form components. Labels should be small and uppercase.",
+    "Create a 'layout.js' for the Dashboard that includes the Sidebar and Header.",
+    "Use 'lucide-react' for all icons.",
+    "Ensure high contrast (WCAG AA) for all text. Muted text must still be readable.",
+    "Do not use generic 'Lorem Ipsum'. Use realistic tech copy (e.g., 'API Latency: 45ms', 'Agent-ID: 8821x')."
+  ],
+  "universal_guidelines": {
+    "spacing": "Use p-8 or p-12 for section padding. Don't crowd elements.",
+    "motion": "Use 'framer-motion' for simple entrance animations (fade-in, slide-up). Duration: 0.3s.",
+    "accessibility": "All interactive elements must have data-testid. Focus states must be visible (ring-2 ring-primary).",
+    "components": "Reuse components from /components/ui. Do not build custom buttons unless necessary.",
+    "icons": "Use lucide-react. Icon size default: 16px (w-4 h-4) or 20px (w-5 h-5)."
+  }
+}

@@ -26,8 +26,11 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Webhook delivery logs in dashboard
 - [x] Content source management UI
 - [x] Crawl history tracking
+- [x] **Search result ranking improvements** (configurable ranking profiles)
+- [x] **Custom crawl rules per domain** (CSS selectors, path filters, rate limiting)
+- [x] **Team/Organization support** (create orgs, invite members, role-based access)
 
-## What's Been Implemented (Jan 2026)
+## What's Been Implemented
 
 ### Backend Endpoints
 - `/api/auth/*` - Session management with Emergent OAuth
@@ -46,23 +49,34 @@ Build an API-first search engine for AI agents called remora.info with:
 - `/api/sources` - Content source management
 - `/api/usage/*` - Analytics
 - `/api/docs/reference` - Full API documentation
+- `/api/rules` - Custom crawl rules CRUD (GET, POST, PUT, DELETE)
+- `/api/rules/domain/{domain}` - Get rule for specific domain
+- `/api/ranking` - Search ranking config CRUD (GET, POST, PUT, DELETE)
+- `/api/orgs` - Organization CRUD (GET, POST, DELETE)
+- `/api/orgs/{org_id}/members` - Org member management
+- `/api/orgs/{org_id}/invite` - Invite members
+- `/api/orgs/invites/pending` - List pending invites
+- `/api/orgs/invites/{invite_id}/accept` - Accept invite
 
 ### Frontend Pages
 - Landing Page (hero, features, free pricing)
 - API Docs Page (`/docs`) - Complete API reference
 - Dashboard - Stats, charts, quick actions
-- API Keys Management
-- Agent Registry
+- API Keys Management (`/keys`)
+- Agent Registry (`/agents`)
 - Content Sources (`/sources`) - Manage URLs to crawl
-- Webhooks Management
+- Crawl Rules (`/crawl-rules`) - Custom extraction rules per domain
+- Webhooks Management (`/webhooks`)
 - Webhook Deliveries (`/webhooks/deliveries`) - Delivery logs
-- Search Test Interface
+- Search Test Interface (`/search`)
+- Search Ranking (`/ranking`) - Configure ranking profiles
 - Crawl History (`/history`) - All crawl operations
-- Analytics Dashboard
-- Settings/Profile Page
+- Analytics Dashboard (`/analytics`)
+- Organizations (`/organizations`) - Team management
+- Settings/Profile Page (`/settings`)
 
 ### Infrastructure
-- Meilisearch: Full-text search (55ms avg)
+- Meilisearch: Full-text search
 - Redis: Webhook delivery queue with 3 retries
 - MongoDB: Data persistence
 - Background Tasks: Scheduled crawl runner, webhook processor
@@ -84,10 +98,43 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Webhook delivery logs
 - [x] Content source management
 - [x] Crawl history tracking
+- [x] Search result ranking improvements
+- [x] Custom crawl rules per domain
+- [x] Team/Organization support
 
-## Future Enhancements
-- [ ] Search result ranking improvements
-- [ ] Custom crawl rules per domain
-- [ ] Team/Organization support
-- [ ] Export functionality
+## Future Enhancements (P2)
+- [ ] Backend refactoring: Break server.py into organized modules
 - [ ] Stripe billing (when ready for paid tiers)
+- [ ] Export functionality
+
+## Architecture
+```
+/app/
+├── backend/
+│   └── server.py         # FastAPI app (~2900 lines, needs modularization)
+│   └── requirements.txt
+│   └── .env
+│   └── tests/
+│       └── test_new_features.py
+├── frontend/
+│   ├── src/
+│   │   ├── App.js        # Main router (all 15 routes)
+│   │   ├── index.css     # Global styles
+│   │   ├── context/
+│   │   │   └── AuthContext.js
+│   │   ├── components/
+│   │   │   └── layout/
+│   │   │       └── DashboardLayout.js # Sidebar (12 nav items)
+│   │   └── pages/        # 15 page components
+│   ├── package.json
+│   └── tailwind.config.js
+├── memory/
+│   └── PRD.md
+└── test_reports/
+    ├── iteration_1.json
+    └── iteration_2.json
+```
+
+## Test Reports
+- iteration_1.json: Initial feature testing
+- iteration_2.json: Crawl Rules, Search Ranking, Organizations - ALL PASSED (21/21 backend, 100% frontend)

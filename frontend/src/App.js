@@ -13,6 +13,7 @@ import Webhooks from "@/pages/Webhooks";
 import SearchTest from "@/pages/SearchTest";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
+import ApiDocs from "@/pages/ApiDocs";
 
 // Context
 import { AuthProvider, useAuth } from "@/context/AuthContext";
@@ -53,6 +54,7 @@ const AppRouter = () => {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
+      <Route path="/docs" element={<ApiDocs />} />
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/keys" element={<ProtectedRoute><APIKeys /></ProtectedRoute>} />
       <Route path="/agents" element={<ProtectedRoute><Agents /></ProtectedRoute>} />

@@ -215,6 +215,41 @@ class CrawlRequest(BaseModel):
     url: str
     extract_links: bool = False
 
+class BulkCrawlRequest(BaseModel):
+    urls: List[str]
+    
+class BulkCrawlResponse(BaseModel):
+    job_id: str
+    total_urls: int
+    status: str
+    message: str
+
+class CrawlJob(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    job_id: str
+    user_id: str
+    urls: List[str]
+    status: str = "pending"  # pending, processing, completed, failed
+    completed: int = 0
+    failed: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+
+class ScheduledCrawl(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    schedule_id: str
+    user_id: str
+    url: str
+    frequency: str = "daily"  # hourly, daily, weekly
+    is_active: bool = True
+    last_crawl: Optional[datetime] = None
+    next_crawl: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ScheduledCrawlCreate(BaseModel):
+    url: str
+    frequency: str = "daily"
+
 class WebhookDelivery(BaseModel):
     delivery_id: str
     webhook_id: str
@@ -961,6 +996,332 @@ async def crawl_website(crawl_request: CrawlRequest, background_tasks: Backgroun
     
     return content.model_dump()
 
+# ==================== Bulk Crawl & Scheduled Crawl ====================
+
+async def process_bulk_crawl_job(job_id: str, urls: List[str], user_id: str):
+    """Background task to process bulk crawl jobs"""
+    completed = 0
+    failed = 0
+    
+    for url in urls:
+        try:
+            data = await crawl_url(url)
+            content_id = f"content_{uuid.uuid4().hex[:12]}"
+            now = datetime.now(timezone.utc)
+            
+            doc = {
+                "content_id": content_id,
+                "url": data["url"],
+                "title": data["title"],
+                "description": data["description"],
+                "content": data["content"],
+                "structured_data": data["structured_data"],
+                "domain": data["domain"],
+                "crawled_at": now.isoformat(),
+                "last_updated": now.isoformat()
+            }
+            
+            await db.crawled_content.update_one(
+                {"url": data["url"]},
+                {"$set": doc},
+                upsert=True
+            )
+            
+            if MEILI_AVAILABLE and meili_client:
+                try:
+                    meili_client.index("content").add_documents([doc])
+                except:
+                    pass
+            
+            completed += 1
+            
+            # Update job progress
+            await db.crawl_jobs.update_one(
+                {"job_id": job_id},
+                {"$set": {"completed": completed, "failed": failed}}
+            )
+            
+            # Small delay to be polite to servers
+            await asyncio.sleep(0.5)
+            
+        except Exception as e:
+            logger.error(f"Bulk crawl failed for {url}: {e}")
+            failed += 1
+            await db.crawl_jobs.update_one(
+                {"job_id": job_id},
+                {"$set": {"completed": completed, "failed": failed}}
+            )
+    
+    # Mark job as completed
+    await db.crawl_jobs.update_one(
+        {"job_id": job_id},
+        {"$set": {
+            "status": "completed",
+            "completed_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Queue webhook
+    await queue_webhook_delivery(
+        "crawl.bulk_complete",
+        {"job_id": job_id, "completed": completed, "failed": failed, "total": len(urls)},
+        user_id
+    )
+    
+    logger.info(f"Bulk crawl job {job_id} completed: {completed} success, {failed} failed")
+
+@api_router.post("/crawl/bulk", response_model=BulkCrawlResponse)
+async def bulk_crawl(request: BulkCrawlRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
+    """
+    Submit multiple URLs for crawling in the background.
+    Returns a job ID to track progress.
+    """
+    if len(request.urls) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 URLs per request")
+    
+    if len(request.urls) == 0:
+        raise HTTPException(status_code=400, detail="At least one URL required")
+    
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+    
+    job = CrawlJob(
+        job_id=job_id,
+        user_id=user.user_id,
+        urls=request.urls,
+        status="processing"
+    )
+    
+    doc = job.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.crawl_jobs.insert_one(doc)
+    
+    # Start background processing
+    background_tasks.add_task(process_bulk_crawl_job, job_id, request.urls, user.user_id)
+    
+    return BulkCrawlResponse(
+        job_id=job_id,
+        total_urls=len(request.urls),
+        status="processing",
+        message=f"Crawling {len(request.urls)} URLs in background"
+    )
+
+@api_router.get("/crawl/jobs")
+async def list_crawl_jobs(user: User = Depends(get_current_user)):
+    """List all crawl jobs for current user"""
+    jobs = await db.crawl_jobs.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(20).to_list(20)
+    
+    return jobs
+
+@api_router.get("/crawl/jobs/{job_id}")
+async def get_crawl_job(job_id: str, user: User = Depends(get_current_user)):
+    """Get status of a specific crawl job"""
+    job = await db.crawl_jobs.find_one(
+        {"job_id": job_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return job
+
+# ==================== Scheduled Crawls ====================
+
+@api_router.post("/crawl/schedule")
+async def create_scheduled_crawl(schedule_data: ScheduledCrawlCreate, user: User = Depends(get_current_user)):
+    """Schedule a URL for automatic periodic crawling"""
+    if schedule_data.frequency not in ["hourly", "daily", "weekly"]:
+        raise HTTPException(status_code=400, detail="Frequency must be hourly, daily, or weekly")
+    
+    # Calculate next crawl time
+    now = datetime.now(timezone.utc)
+    if schedule_data.frequency == "hourly":
+        next_crawl = now + timedelta(hours=1)
+    elif schedule_data.frequency == "daily":
+        next_crawl = now + timedelta(days=1)
+    else:  # weekly
+        next_crawl = now + timedelta(weeks=1)
+    
+    schedule = ScheduledCrawl(
+        schedule_id=f"sched_{uuid.uuid4().hex[:12]}",
+        user_id=user.user_id,
+        url=schedule_data.url,
+        frequency=schedule_data.frequency,
+        next_crawl=next_crawl
+    )
+    
+    doc = schedule.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["next_crawl"] = doc["next_crawl"].isoformat() if doc["next_crawl"] else None
+    
+    # Check for duplicate
+    existing = await db.scheduled_crawls.find_one({
+        "user_id": user.user_id,
+        "url": schedule_data.url
+    })
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="URL already scheduled")
+    
+    await db.scheduled_crawls.insert_one(doc)
+    
+    # Do initial crawl
+    try:
+        data = await crawl_url(schedule_data.url)
+        content_id = f"content_{uuid.uuid4().hex[:12]}"
+        
+        content_doc = {
+            "content_id": content_id,
+            "url": data["url"],
+            "title": data["title"],
+            "description": data["description"],
+            "content": data["content"],
+            "structured_data": data["structured_data"],
+            "domain": data["domain"],
+            "crawled_at": now.isoformat(),
+            "last_updated": now.isoformat()
+        }
+        
+        await db.crawled_content.update_one(
+            {"url": data["url"]},
+            {"$set": content_doc},
+            upsert=True
+        )
+        
+        if MEILI_AVAILABLE and meili_client:
+            meili_client.index("content").add_documents([content_doc])
+        
+        await db.scheduled_crawls.update_one(
+            {"schedule_id": schedule.schedule_id},
+            {"$set": {"last_crawl": now.isoformat()}}
+        )
+    except Exception as e:
+        logger.warning(f"Initial crawl failed for scheduled URL: {e}")
+    
+    return schedule.model_dump()
+
+@api_router.get("/crawl/schedule")
+async def list_scheduled_crawls(user: User = Depends(get_current_user)):
+    """List all scheduled crawls for current user"""
+    schedules = await db.scheduled_crawls.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).to_list(100)
+    
+    return schedules
+
+@api_router.delete("/crawl/schedule/{schedule_id}")
+async def delete_scheduled_crawl(schedule_id: str, user: User = Depends(get_current_user)):
+    """Delete a scheduled crawl"""
+    result = await db.scheduled_crawls.delete_one({
+        "schedule_id": schedule_id,
+        "user_id": user.user_id
+    })
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    return {"message": "Schedule deleted"}
+
+@api_router.put("/crawl/schedule/{schedule_id}/toggle")
+async def toggle_scheduled_crawl(schedule_id: str, user: User = Depends(get_current_user)):
+    """Toggle a scheduled crawl on/off"""
+    schedule = await db.scheduled_crawls.find_one({
+        "schedule_id": schedule_id,
+        "user_id": user.user_id
+    })
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    new_status = not schedule.get("is_active", True)
+    
+    await db.scheduled_crawls.update_one(
+        {"schedule_id": schedule_id},
+        {"$set": {"is_active": new_status}}
+    )
+    
+    return {"schedule_id": schedule_id, "is_active": new_status}
+
+# Background task to run scheduled crawls
+async def run_scheduled_crawls():
+    """Check and execute due scheduled crawls"""
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            
+            # Find due schedules
+            due_schedules = await db.scheduled_crawls.find({
+                "is_active": True,
+                "next_crawl": {"$lte": now.isoformat()}
+            }).to_list(50)
+            
+            for schedule in due_schedules:
+                try:
+                    data = await crawl_url(schedule["url"])
+                    content_id = f"content_{uuid.uuid4().hex[:12]}"
+                    
+                    content_doc = {
+                        "content_id": content_id,
+                        "url": data["url"],
+                        "title": data["title"],
+                        "description": data["description"],
+                        "content": data["content"],
+                        "structured_data": data["structured_data"],
+                        "domain": data["domain"],
+                        "crawled_at": now.isoformat(),
+                        "last_updated": now.isoformat()
+                    }
+                    
+                    await db.crawled_content.update_one(
+                        {"url": data["url"]},
+                        {"$set": content_doc},
+                        upsert=True
+                    )
+                    
+                    if MEILI_AVAILABLE and meili_client:
+                        meili_client.index("content").add_documents([content_doc])
+                    
+                    # Calculate next crawl
+                    freq = schedule.get("frequency", "daily")
+                    if freq == "hourly":
+                        next_crawl = now + timedelta(hours=1)
+                    elif freq == "daily":
+                        next_crawl = now + timedelta(days=1)
+                    else:
+                        next_crawl = now + timedelta(weeks=1)
+                    
+                    await db.scheduled_crawls.update_one(
+                        {"schedule_id": schedule["schedule_id"]},
+                        {"$set": {
+                            "last_crawl": now.isoformat(),
+                            "next_crawl": next_crawl.isoformat()
+                        }}
+                    )
+                    
+                    # Queue webhook
+                    await queue_webhook_delivery(
+                        "content.updated",
+                        {"url": schedule["url"], "title": data["title"], "scheduled": True},
+                        schedule["user_id"]
+                    )
+                    
+                    logger.info(f"Scheduled crawl completed: {schedule['url']}")
+                    
+                except Exception as e:
+                    logger.error(f"Scheduled crawl failed for {schedule['url']}: {e}")
+                
+                await asyncio.sleep(1)  # Rate limiting
+            
+            await asyncio.sleep(60)  # Check every minute
+            
+        except Exception as e:
+            logger.error(f"Scheduled crawl runner error: {e}")
+            await asyncio.sleep(60)
+
 # ==================== Usage & Analytics Routes ====================
 
 @api_router.get("/usage/stats")
@@ -1039,7 +1400,220 @@ async def get_recent_usage(user: User = Depends(get_current_user), limit: int = 
 
 @api_router.get("/")
 async def root():
-    return {"message": "Remora API - Search Engine for AI Agents", "version": "1.1.0"}
+    return {"message": "Remora API - Search Engine for AI Agents", "version": "1.2.0"}
+
+@api_router.get("/docs/reference")
+async def api_docs():
+    """Complete API documentation with examples"""
+    return {
+        "name": "Remora API",
+        "version": "1.2.0",
+        "description": "API-first search engine for AI agents",
+        "base_url": "/api",
+        "authentication": {
+            "type": "API Key",
+            "header": "X-API-Key",
+            "description": "Include your API key in the X-API-Key header for all agent endpoints",
+            "example": "X-API-Key: rmr_your_api_key_here"
+        },
+        "endpoints": {
+            "search": {
+                "method": "POST",
+                "path": "/api/search",
+                "description": "Search for content using structured queries",
+                "auth": "API Key",
+                "request": {
+                    "query": "string (required) - Search query",
+                    "intent": "string (optional) - Query intent (documentation, tutorial, api, etc.)",
+                    "filters": "object (optional) - Filter by type, language, domain",
+                    "max_results": "integer (optional, default: 10) - Max results to return"
+                },
+                "example_request": {
+                    "query": "python async patterns",
+                    "intent": "documentation",
+                    "filters": {"language": "python"},
+                    "max_results": 5
+                },
+                "example_response": {
+                    "results": [
+                        {
+                            "content_id": "content_abc123",
+                            "title": "asyncio — Asynchronous I/O",
+                            "url": "https://docs.python.org/3/library/asyncio.html",
+                            "description": "asyncio is a library...",
+                            "structured_data": {"type": "documentation", "language": "python"}
+                        }
+                    ],
+                    "total": 42,
+                    "query": "python async patterns",
+                    "processing_time_ms": 23
+                }
+            },
+            "content": {
+                "method": "GET",
+                "path": "/api/content/{content_id}",
+                "description": "Get full content by ID",
+                "auth": "API Key",
+                "example_response": {
+                    "content_id": "content_abc123",
+                    "url": "https://example.com/page",
+                    "title": "Page Title",
+                    "description": "Page description",
+                    "content": "Full extracted content...",
+                    "structured_data": {"type": "article", "language": "en"},
+                    "domain": "example.com",
+                    "crawled_at": "2026-01-20T12:00:00Z"
+                }
+            },
+            "crawl": {
+                "method": "POST",
+                "path": "/api/crawl",
+                "description": "Crawl a single URL and extract structured data",
+                "auth": "Session (Dashboard)",
+                "request": {
+                    "url": "string (required) - URL to crawl"
+                },
+                "example_request": {
+                    "url": "https://fastapi.tiangolo.com/"
+                }
+            },
+            "bulk_crawl": {
+                "method": "POST",
+                "path": "/api/crawl/bulk",
+                "description": "Submit multiple URLs for background crawling",
+                "auth": "Session (Dashboard)",
+                "request": {
+                    "urls": "array[string] (required) - URLs to crawl (max 100)"
+                },
+                "example_request": {
+                    "urls": [
+                        "https://docs.python.org/3/",
+                        "https://react.dev/",
+                        "https://tailwindcss.com/"
+                    ]
+                },
+                "example_response": {
+                    "job_id": "job_abc123",
+                    "total_urls": 3,
+                    "status": "processing",
+                    "message": "Crawling 3 URLs in background"
+                }
+            },
+            "crawl_job_status": {
+                "method": "GET",
+                "path": "/api/crawl/jobs/{job_id}",
+                "description": "Check status of a bulk crawl job",
+                "auth": "Session (Dashboard)",
+                "example_response": {
+                    "job_id": "job_abc123",
+                    "status": "completed",
+                    "completed": 3,
+                    "failed": 0,
+                    "urls": ["..."],
+                    "created_at": "2026-01-20T12:00:00Z",
+                    "completed_at": "2026-01-20T12:01:00Z"
+                }
+            },
+            "schedule_crawl": {
+                "method": "POST",
+                "path": "/api/crawl/schedule",
+                "description": "Schedule a URL for automatic periodic crawling",
+                "auth": "Session (Dashboard)",
+                "request": {
+                    "url": "string (required) - URL to crawl",
+                    "frequency": "string (required) - hourly, daily, or weekly"
+                },
+                "example_request": {
+                    "url": "https://news.ycombinator.com/",
+                    "frequency": "hourly"
+                }
+            },
+            "agents": {
+                "method": "POST",
+                "path": "/api/agents",
+                "description": "Register a new agent",
+                "auth": "Session (Dashboard)",
+                "request": {
+                    "name": "string (required) - Agent name",
+                    "description": "string (optional) - Agent description",
+                    "capabilities": "array[string] (optional) - Agent capabilities",
+                    "endpoint_url": "string (optional) - Webhook endpoint",
+                    "auth_type": "string (optional) - api_key, bearer_token, oauth2, none"
+                }
+            },
+            "webhooks": {
+                "method": "POST",
+                "path": "/api/webhooks",
+                "description": "Subscribe to event notifications",
+                "auth": "Session (Dashboard)",
+                "events": [
+                    "search.complete - When a search query completes",
+                    "content.new - When new content is crawled",
+                    "content.updated - When content is refreshed",
+                    "crawl.bulk_complete - When bulk crawl job finishes"
+                ],
+                "webhook_payload": {
+                    "headers": {
+                        "X-Remora-Event": "event_name",
+                        "X-Remora-Signature": "sha256_hmac_signature",
+                        "X-Remora-Delivery": "delivery_id"
+                    },
+                    "body": "JSON payload with event data"
+                }
+            },
+            "api_keys": {
+                "method": "POST",
+                "path": "/api/keys",
+                "description": "Create a new API key",
+                "auth": "Session (Dashboard)",
+                "note": "API key is only shown once on creation"
+            }
+        },
+        "rate_limits": {
+            "current": "Free for everyone - unlimited",
+            "note": "We're tracking usage to understand patterns. Paid tiers coming later."
+        },
+        "code_examples": {
+            "python": """import requests
+
+API_KEY = "rmr_your_api_key"
+BASE_URL = "https://your-app.com/api"
+
+# Search
+response = requests.post(
+    f"{BASE_URL}/search",
+    headers={"X-API-Key": API_KEY},
+    json={"query": "python async", "max_results": 5}
+)
+results = response.json()
+print(f"Found {results['total']} results")
+""",
+            "javascript": """const API_KEY = "rmr_your_api_key";
+const BASE_URL = "https://your-app.com/api";
+
+// Search
+const response = await fetch(`${BASE_URL}/search`, {
+    method: "POST",
+    headers: {
+        "X-API-Key": API_KEY,
+        "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+        query: "python async",
+        max_results: 5
+    })
+});
+const results = await response.json();
+console.log(`Found ${results.total} results`);
+""",
+            "curl": """# Search
+curl -X POST "https://your-app.com/api/search" \\
+    -H "X-API-Key: rmr_your_api_key" \\
+    -H "Content-Type: application/json" \\
+    -d '{"query": "python async", "max_results": 5}'
+"""
+        }
+    }
 
 @api_router.get("/health")
 async def health_check():
@@ -1177,12 +1751,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Start webhook processor on startup
+# Start webhook processor and scheduled crawl runner on startup
 @app.on_event("startup")
 async def startup_event():
     if REDIS_AVAILABLE:
         asyncio.create_task(process_webhook_queue())
         logger.info("Webhook processor started")
+    
+    # Start scheduled crawl runner
+    asyncio.create_task(run_scheduled_crawls())
+    logger.info("Scheduled crawl runner started")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

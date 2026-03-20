@@ -148,7 +148,7 @@ const LandingPage = () => {
                 Get Started Free
                 <ArrowRight className="ml-2 w-4 h-4" />
               </Button>
-              <Button variant="outline" size="lg" className="px-8" data-testid="docs-btn">
+              <Button variant="outline" size="lg" className="px-8" onClick={() => navigate('/docs')} data-testid="docs-btn">
                 <Terminal className="mr-2 w-4 h-4" />
                 View API Docs
               </Button>

@@ -25,6 +25,9 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Emergent Google Social Login
 - [x] Meilisearch for fast search
 - [x] Web crawler for content extraction
+- [x] Scheduled crawling for content freshness
+- [x] Bulk crawl endpoint for batch processing
+- [x] API docs page with interactive examples
 
 ## What's Been Implemented (Jan 2026)
 
@@ -34,13 +37,17 @@ Build an API-first search engine for AI agents called remora.info with:
 - `/api/agents` - Agent Registry CRUD
 - `/api/webhooks` - Webhook subscription management with Redis queue
 - `/api/search` - Agent Query API with Meilisearch
-- `/api/crawl` - Web crawler endpoint (extracts title, description, content, structured data)
+- `/api/crawl` - Single URL crawl endpoint
+- `/api/crawl/bulk` - Bulk crawl endpoint (up to 100 URLs)
+- `/api/crawl/jobs` - Track bulk crawl job status
+- `/api/crawl/schedule` - Scheduled crawling (hourly/daily/weekly)
 - `/api/usage/*` - Analytics (tracking only, no limits)
 - `/api/content` - Crawled content listing
-- `/api/seed` - Sample data seeding
+- `/api/docs/reference` - Full API documentation
 
 ### Frontend (React + Tailwind + Shadcn)
 - Landing Page (hero, features, single free pricing)
+- API Docs Page (quick start, auth, endpoints, code examples)
 - Dashboard (stats, charts, quick actions)
 - API Keys Management
 - Agent Registry
@@ -50,13 +57,14 @@ Build an API-first search engine for AI agents called remora.info with:
 - Settings/Profile Page
 
 ### Infrastructure
-- Meilisearch: Full-text search with filtering
-- Redis: Webhook delivery queue with retries
+- Meilisearch: Full-text search with filtering (55ms avg)
+- Redis: Webhook delivery queue with 3 retries
 - MongoDB: Data persistence
+- Background Tasks: Scheduled crawl runner, webhook processor
 
 ## Pricing Strategy
 - **Currently**: FREE for everyone, unlimited usage
-- **Future**: Add paid tiers once we have users and understand usage patterns
+- **Future**: Add paid tiers once we have users
 
 ## Prioritized Backlog
 
@@ -67,23 +75,26 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Meilisearch integration
 - [x] Web crawler
 - [x] Redis webhook queue
+- [x] Scheduled crawling
+- [x] Bulk crawl endpoint
+- [x] API docs page
 
 ### P1 (High Priority)
-- [ ] Scheduled crawling (cron jobs for content freshness)
-- [ ] Bulk crawl endpoint
+- [ ] Webhook delivery logs in dashboard
+- [ ] Content source management UI
 - [ ] Search result ranking improvements
-- [ ] API documentation page (Swagger/ReDoc)
+- [ ] Crawl history and versioning
 
 ### P2 (Medium Priority)
 - [ ] Team/Organization support
-- [ ] Content source management UI
-- [ ] Webhook delivery logs in dashboard
 - [ ] Export functionality
+- [ ] Advanced filters in search
+- [ ] Custom crawl rules per domain
 
 ### P3 (On Hold)
 - [ ] Stripe billing (add later when ready for paid tiers)
 
 ## Next Tasks
-1. Add scheduled crawling for content freshness
-2. Build bulk crawl endpoint for batch URL processing
-3. Add API docs page with interactive examples
+1. Add webhook delivery logs to dashboard
+2. Build content source management UI
+3. Implement crawl history tracking

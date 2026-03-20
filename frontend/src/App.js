@@ -20,6 +20,7 @@ import CrawlHistory from "@/pages/CrawlHistory";
 import CrawlRules from "@/pages/CrawlRules";
 import Organizations from "@/pages/Organizations";
 import SearchRanking from "@/pages/SearchRanking";
+import Billing from "@/pages/Billing";
 
 // Context
 import { AuthProvider, useAuth } from "@/context/AuthContext";
@@ -73,6 +74,7 @@ const AppRouter = () => {
       <Route path="/crawl-rules" element={<ProtectedRoute><CrawlRules /></ProtectedRoute>} />
       <Route path="/organizations" element={<ProtectedRoute><Organizations /></ProtectedRoute>} />
       <Route path="/ranking" element={<ProtectedRoute><SearchRanking /></ProtectedRoute>} />
+      <Route path="/billing" element={<ProtectedRoute><Billing /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
     </Routes>
   );

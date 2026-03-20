@@ -416,6 +416,93 @@ class WebhookDelivery(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     delivered_at: Optional[datetime] = None
 
+# ==================== Billing Models ====================
+
+PLANS = {
+    "free": {"name": "Free", "price": 0.0, "credits": 3000, "description": "3,000 credits/month"},
+    "starter": {"name": "Starter", "price": 29.0, "credits": 10000, "description": "10,000 credits/month"},
+    "growth": {"name": "Growth", "price": 99.0, "credits": 40000, "description": "40,000 credits/month"},
+    "scale": {"name": "Scale", "price": 399.0, "credits": 200000, "description": "200,000 credits/month"},
+}
+
+CREDIT_COSTS = {
+    "search": 1,
+    "crawl": 1,
+    "bulk_crawl_per_url": 1,
+    "content_extract": 1,
+}
+
+class CheckoutRequest(BaseModel):
+    plan_id: str
+    origin_url: str
+
+async def get_user_credits(user_id: str) -> Dict[str, Any]:
+    """Get user's current credit balance and plan info"""
+    billing = await db.user_billing.find_one({"user_id": user_id}, {"_id": 0})
+    if not billing:
+        now = datetime.now(timezone.utc)
+        billing = {
+            "user_id": user_id,
+            "plan": "free",
+            "credits_remaining": PLANS["free"]["credits"],
+            "credits_used": 0,
+            "period_start": now.isoformat(),
+            "period_end": (now + timedelta(days=30)).isoformat(),
+        }
+        await db.user_billing.insert_one(billing)
+    return billing
+
+async def deduct_credits(user_id: str, amount: int, operation: str) -> bool:
+    """Deduct credits. Returns True if successful, False if insufficient."""
+    billing = await get_user_credits(user_id)
+    
+    # Check if period expired — reset for free tier
+    period_end = billing.get("period_end", "")
+    if period_end:
+        end_dt = datetime.fromisoformat(period_end) if isinstance(period_end, str) else period_end
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > end_dt:
+            plan = billing.get("plan", "free")
+            now = datetime.now(timezone.utc)
+            await db.user_billing.update_one(
+                {"user_id": user_id},
+                {"$set": {
+                    "credits_remaining": PLANS.get(plan, PLANS["free"])["credits"],
+                    "credits_used": 0,
+                    "period_start": now.isoformat(),
+                    "period_end": (now + timedelta(days=30)).isoformat(),
+                }}
+            )
+            billing = await get_user_credits(user_id)
+    
+    if billing["credits_remaining"] < amount:
+        return False
+    
+    await db.user_billing.update_one(
+        {"user_id": user_id},
+        {"$inc": {"credits_remaining": -amount, "credits_used": amount}}
+    )
+    
+    # Log credit usage
+    await db.credit_usage.insert_one({
+        "user_id": user_id,
+        "operation": operation,
+        "credits": amount,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return True
+
+async def check_credits_or_block(user_id: str, amount: int, operation: str):
+    """Check credits and raise 402 if insufficient"""
+    success = await deduct_credits(user_id, amount, operation)
+    if not success:
+        raise HTTPException(
+            status_code=402,
+            detail="Credit limit reached. Upgrade your plan at /billing."
+        )
+
 # ==================== Auth Helpers ====================
 
 async def get_current_user(request: Request) -> User:
@@ -1072,14 +1159,7 @@ async def delete_webhook(webhook_id: str, user: User = Depends(get_current_user)
 async def agent_search(query: SearchQuery, request: Request, background_tasks: BackgroundTasks):
     """
     Agent Query API - accepts structured JSON queries, returns JSON results.
-    FREE for everyone - just tracking usage.
-    
-    Supports advanced ranking options:
-    - boost_domains: List of domains to prioritize
-    - prefer_types: List of content types to prefer (documentation, article, etc.)
-    - recency_boost: Whether to boost recent content (default: True)
-    - sort_by: 'relevance' (default) or 'recency'
-    - ranking_config_id: Use a saved ranking configuration
+    Costs 1 credit per search.
     """
     import time
     start_time = time.time()
@@ -1087,6 +1167,9 @@ async def agent_search(query: SearchQuery, request: Request, background_tasks: B
     user = await get_user_from_api_key(request)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    
+    # Deduct 1 credit for search
+    await check_credits_or_block(user.user_id, CREDIT_COSTS["search"], "search")
     
     api_key = request.headers.get("X-API-Key")
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
@@ -1228,10 +1311,13 @@ async def list_content(user: User = Depends(get_current_user), limit: int = 50):
 
 @api_router.get("/content/{content_id}")
 async def get_content(content_id: str, request: Request):
-    """Get specific content by ID (API key auth for agents)"""
+    """Get specific content by ID (API key auth for agents). Costs 1 credit."""
     user = await get_user_from_api_key(request)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    
+    # Deduct 1 credit for content extract
+    await check_credits_or_block(user.user_id, CREDIT_COSTS["content_extract"], "content_extract")
     
     content = await db.crawled_content.find_one(
         {"content_id": content_id},
@@ -1245,7 +1331,10 @@ async def get_content(content_id: str, request: Request):
 
 @api_router.post("/crawl")
 async def crawl_website(crawl_request: CrawlRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
-    """Crawl a URL and extract structured data"""
+    """Crawl a URL and extract structured data. Costs 1 credit."""
+    # Deduct 1 credit for crawl
+    await check_credits_or_block(user.user_id, CREDIT_COSTS["crawl"], "crawl")
+    
     data = await crawl_url(crawl_request.url)
     
     content_id = f"content_{uuid.uuid4().hex[:12]}"
@@ -1375,15 +1464,16 @@ async def process_bulk_crawl_job(job_id: str, urls: List[str], user_id: str):
 
 @api_router.post("/crawl/bulk", response_model=BulkCrawlResponse)
 async def bulk_crawl(request: BulkCrawlRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
-    """
-    Submit multiple URLs for crawling in the background.
-    Returns a job ID to track progress.
-    """
+    """Submit multiple URLs for crawling. Costs 1 credit per URL."""
     if len(request.urls) > 100:
         raise HTTPException(status_code=400, detail="Maximum 100 URLs per request")
     
     if len(request.urls) == 0:
         raise HTTPException(status_code=400, detail="At least one URL required")
+    
+    # Deduct credits for all URLs upfront
+    total_cost = len(request.urls) * CREDIT_COSTS["bulk_crawl_per_url"]
+    await check_credits_or_block(user.user_id, total_cost, f"bulk_crawl_{len(request.urls)}_urls")
     
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     
@@ -2445,6 +2535,222 @@ async def delete_organization(org_id: str, user: User = Depends(get_current_user
     await db.org_invites.delete_many({"org_id": org_id})
     
     return {"message": "Organization deleted"}
+
+# ==================== Billing & Stripe ====================
+
+@api_router.get("/billing/plans")
+async def list_plans():
+    """List all available plans (public endpoint)"""
+    return [
+        {"plan_id": k, **v}
+        for k, v in PLANS.items()
+    ]
+
+@api_router.get("/billing/usage")
+async def get_billing_usage(user: User = Depends(get_current_user)):
+    """Get current billing usage and credit balance"""
+    billing = await get_user_credits(user.user_id)
+    plan_info = PLANS.get(billing.get("plan", "free"), PLANS["free"])
+    
+    # Get recent credit usage
+    recent = await db.credit_usage.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("timestamp", -1).limit(20).to_list(20)
+    
+    total_credits = plan_info["credits"]
+    used = billing.get("credits_used", 0)
+    remaining = billing.get("credits_remaining", total_credits)
+    usage_pct = round((used / total_credits) * 100, 1) if total_credits > 0 else 0
+    
+    return {
+        "plan": billing.get("plan", "free"),
+        "plan_name": plan_info["name"],
+        "plan_price": plan_info["price"],
+        "credits_total": total_credits,
+        "credits_used": used,
+        "credits_remaining": remaining,
+        "usage_percentage": usage_pct,
+        "alert": usage_pct >= 80,
+        "period_start": billing.get("period_start"),
+        "period_end": billing.get("period_end"),
+        "recent_usage": recent,
+    }
+
+@api_router.post("/billing/checkout")
+async def create_checkout(checkout_req: CheckoutRequest, request: Request, user: User = Depends(get_current_user)):
+    """Create a Stripe checkout session for a plan upgrade"""
+    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    
+    plan_id = checkout_req.plan_id
+    if plan_id not in PLANS or plan_id == "free":
+        raise HTTPException(status_code=400, detail="Invalid plan. Choose starter, growth, or scale.")
+    
+    plan = PLANS[plan_id]
+    api_key = os.environ.get("STRIPE_API_KEY")
+    
+    origin_url = checkout_req.origin_url.rstrip("/")
+    success_url = f"{origin_url}/billing?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin_url}/billing"
+    
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    
+    checkout_request = CheckoutSessionRequest(
+        amount=plan["price"],
+        currency="usd",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "user_id": user.user_id,
+            "plan_id": plan_id,
+            "plan_name": plan["name"],
+            "credits": str(plan["credits"]),
+        }
+    )
+    
+    session = await stripe_checkout.create_checkout_session(checkout_request)
+    
+    # Create payment transaction record
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id,
+        "user_id": user.user_id,
+        "plan_id": plan_id,
+        "amount": plan["price"],
+        "currency": "usd",
+        "credits": plan["credits"],
+        "payment_status": "pending",
+        "status": "initiated",
+        "metadata": {
+            "user_id": user.user_id,
+            "plan_id": plan_id,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    
+    return {"url": session.url, "session_id": session.session_id}
+
+@api_router.get("/billing/checkout/status/{session_id}")
+async def get_checkout_status(session_id: str, request: Request, user: User = Depends(get_current_user)):
+    """Poll Stripe checkout status and update billing on success"""
+    from emergentintegrations.payments.stripe.checkout import StripeCheckout
+    
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    checkout_status = await stripe_checkout.get_checkout_status(session_id)
+    
+    # Get existing transaction
+    txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Only process if not already completed (prevent double-crediting)
+    if txn.get("payment_status") != "paid" and checkout_status.payment_status == "paid":
+        plan_id = txn.get("plan_id", "free")
+        credits = txn.get("credits", PLANS.get(plan_id, PLANS["free"])["credits"])
+        now = datetime.now(timezone.utc)
+        
+        # Update user billing
+        await db.user_billing.update_one(
+            {"user_id": user.user_id},
+            {"$set": {
+                "plan": plan_id,
+                "credits_remaining": credits,
+                "credits_used": 0,
+                "period_start": now.isoformat(),
+                "period_end": (now + timedelta(days=30)).isoformat(),
+            }},
+            upsert=True
+        )
+        
+        # Update transaction
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {
+                "payment_status": "paid",
+                "status": "completed",
+                "completed_at": now.isoformat(),
+            }}
+        )
+    elif checkout_status.status == "expired":
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {"payment_status": "expired", "status": "expired"}}
+        )
+    
+    return {
+        "status": checkout_status.status,
+        "payment_status": checkout_status.payment_status,
+        "amount_total": checkout_status.amount_total,
+        "currency": checkout_status.currency,
+    }
+
+@api_router.get("/billing/transactions")
+async def list_transactions(user: User = Depends(get_current_user)):
+    """List payment transactions for current user"""
+    txns = await db.payment_transactions.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(20).to_list(20)
+    return txns
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events"""
+    from emergentintegrations.payments.stripe.checkout import StripeCheckout
+    
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    
+    body = await request.body()
+    signature = request.headers.get("Stripe-Signature", "")
+    
+    try:
+        webhook_response = await stripe_checkout.handle_webhook(body, signature)
+        
+        if webhook_response.payment_status == "paid":
+            session_id = webhook_response.session_id
+            txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+            
+            if txn and txn.get("payment_status") != "paid":
+                user_id = txn.get("user_id") or webhook_response.metadata.get("user_id")
+                plan_id = txn.get("plan_id") or webhook_response.metadata.get("plan_id", "free")
+                credits = txn.get("credits", PLANS.get(plan_id, PLANS["free"])["credits"])
+                now = datetime.now(timezone.utc)
+                
+                await db.user_billing.update_one(
+                    {"user_id": user_id},
+                    {"$set": {
+                        "plan": plan_id,
+                        "credits_remaining": credits,
+                        "credits_used": 0,
+                        "period_start": now.isoformat(),
+                        "period_end": (now + timedelta(days=30)).isoformat(),
+                    }},
+                    upsert=True
+                )
+                
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id},
+                    {"$set": {
+                        "payment_status": "paid",
+                        "status": "completed",
+                        "completed_at": now.isoformat(),
+                    }}
+                )
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Stripe webhook error: {e}")
+        return {"status": "error", "message": str(e)}
 
 # ==================== Health & Status ====================
 

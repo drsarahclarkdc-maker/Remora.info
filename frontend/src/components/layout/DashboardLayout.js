@@ -25,7 +25,8 @@ import {
   Send,
   Settings2,
   Building2,
-  ArrowUpDown
+  ArrowUpDown,
+  CreditCard
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -41,6 +42,7 @@ const navigation = [
   { name: 'Ranking', href: '/ranking', icon: ArrowUpDown },
   { name: 'Crawl History', href: '/history', icon: History },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Billing', href: '/billing', icon: CreditCard },
   { name: 'Organizations', href: '/organizations', icon: Building2 },
 ];
 

@@ -1,51 +1,77 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+// Pages
+import LandingPage from "@/pages/LandingPage";
+import AuthCallback from "@/pages/AuthCallback";
+import Dashboard from "@/pages/Dashboard";
+import APIKeys from "@/pages/APIKeys";
+import Agents from "@/pages/Agents";
+import Webhooks from "@/pages/Webhooks";
+import SearchTest from "@/pages/SearchTest";
+import Analytics from "@/pages/Analytics";
+import Settings from "@/pages/Settings";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
+// Context
+import { AuthProvider, useAuth } from "@/context/AuthContext";
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+// Protected Route Component
+const ProtectedRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="text-muted-foreground text-sm">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+  
+  if (!user) {
+    return <Navigate to="/" state={{ from: location }} replace />;
+  }
+  
+  return children;
+};
 
+// App Router with session_id detection
+const AppRouter = () => {
+  const location = useLocation();
+  
+  // CRITICAL: Check URL fragment for session_id synchronously during render
+  // This prevents race conditions by processing new session_id FIRST
+  if (location.hash?.includes('session_id=')) {
+    return <AuthCallback />;
+  }
+  
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
+    <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/keys" element={<ProtectedRoute><APIKeys /></ProtectedRoute>} />
+      <Route path="/agents" element={<ProtectedRoute><Agents /></ProtectedRoute>} />
+      <Route path="/webhooks" element={<ProtectedRoute><Webhooks /></ProtectedRoute>} />
+      <Route path="/search" element={<ProtectedRoute><SearchTest /></ProtectedRoute>} />
+      <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+      <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+    </Routes>
   );
 };
 
 function App() {
   return (
-    <div className="App">
+    <div className="App dark">
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
+        <AuthProvider>
+          <AppRouter />
+          <Toaster position="bottom-right" />
+        </AuthProvider>
       </BrowserRouter>
     </div>
   );

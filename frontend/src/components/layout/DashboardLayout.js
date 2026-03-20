@@ -1,0 +1,208 @@
+import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
+import { Button } from '@/components/ui/button';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  LayoutDashboard,
+  Key,
+  Bot,
+  Webhook,
+  Search,
+  BarChart3,
+  Settings,
+  LogOut,
+  Menu,
+  X
+} from 'lucide-react';
+import { useState } from 'react';
+
+const navigation = [
+  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { name: 'API Keys', href: '/keys', icon: Key },
+  { name: 'Agents', href: '/agents', icon: Bot },
+  { name: 'Webhooks', href: '/webhooks', icon: Webhook },
+  { name: 'Search Test', href: '/search', icon: Search },
+  { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+];
+
+const DashboardLayout = ({ children }) => {
+  const { user, logout } = useAuth();
+  const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const isActive = (href) => location.pathname === href;
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Sidebar - Desktop */}
+      <aside className="fixed left-0 top-0 z-40 hidden lg:flex h-screen w-64 flex-col border-r border-border bg-card">
+        {/* Logo */}
+        <div className="flex h-16 items-center gap-2 border-b border-border px-6">
+          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+            <Search className="w-4 h-4 text-primary-foreground" />
+          </div>
+          <span className="font-semibold text-lg tracking-tight">Remora</span>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 space-y-1 px-3 py-4">
+          {navigation.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(item.href);
+            return (
+              <Link
+                key={item.name}
+                to={item.href}
+                data-testid={`nav-${item.name.toLowerCase().replace(' ', '-')}`}
+                className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  active
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {item.name}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* User section */}
+        <div className="border-t border-border p-4">
+          <div className="flex items-center gap-3">
+            <Avatar className="w-9 h-9">
+              <AvatarImage src={user?.picture} alt={user?.name} />
+              <AvatarFallback className="bg-primary/10 text-primary text-sm">
+                {user?.name?.charAt(0) || 'U'}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{user?.name}</p>
+              <p className="text-xs text-muted-foreground truncate">{user?.tier} tier</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Mobile header */}
+      <header className="lg:hidden fixed top-0 left-0 right-0 z-50 h-16 border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
+        <div className="flex h-full items-center justify-between px-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+              <Search className="w-4 h-4 text-primary-foreground" />
+            </div>
+            <span className="font-semibold text-lg tracking-tight">Remora</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            data-testid="mobile-menu-btn"
+          >
+            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </Button>
+        </div>
+      </header>
+
+      {/* Mobile menu */}
+      {mobileMenuOpen && (
+        <div className="lg:hidden fixed inset-0 z-40 bg-background/95 backdrop-blur pt-16">
+          <nav className="p-4 space-y-1">
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              const active = isActive(item.href);
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`flex items-center gap-3 rounded-md px-3 py-3 text-base font-medium transition-colors ${
+                    active
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                  }`}
+                >
+                  <Icon className="w-5 h-5" />
+                  {item.name}
+                </Link>
+              );
+            })}
+            <div className="pt-4 border-t border-border mt-4">
+              <Link
+                to="/settings"
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center gap-3 rounded-md px-3 py-3 text-base font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                <Settings className="w-5 h-5" />
+                Settings
+              </Link>
+              <button
+                onClick={() => { setMobileMenuOpen(false); logout(); }}
+                className="w-full flex items-center gap-3 rounded-md px-3 py-3 text-base font-medium text-destructive hover:bg-destructive/10"
+              >
+                <LogOut className="w-5 h-5" />
+                Logout
+              </button>
+            </div>
+          </nav>
+        </div>
+      )}
+
+      {/* Main content */}
+      <main className="lg:pl-64 pt-16 lg:pt-0">
+        {/* Top header - Desktop */}
+        <header className="hidden lg:flex sticky top-0 z-30 h-16 items-center justify-between border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 px-6">
+          <div />
+          <div className="flex items-center gap-4">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" className="relative h-9 w-9 rounded-full" data-testid="user-menu-btn">
+                  <Avatar className="h-9 w-9">
+                    <AvatarImage src={user?.picture} alt={user?.name} />
+                    <AvatarFallback className="bg-primary/10 text-primary">
+                      {user?.name?.charAt(0) || 'U'}
+                    </AvatarFallback>
+                  </Avatar>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <div className="flex items-center justify-start gap-2 p-2">
+                  <div className="flex flex-col space-y-0.5">
+                    <p className="text-sm font-medium">{user?.name}</p>
+                    <p className="text-xs text-muted-foreground">{user?.email}</p>
+                  </div>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link to="/settings" className="cursor-pointer">
+                    <Settings className="mr-2 h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={logout} className="text-destructive cursor-pointer">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </header>
+
+        {/* Page content */}
+        <div className="p-6">
+          {children}
+        </div>
+      </main>
+    </div>
+  );
+};
+
+export default DashboardLayout;

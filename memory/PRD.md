@@ -9,13 +9,8 @@ Build an API-first search engine for AI agents called remora.info with:
 - Webhook Subscriptions — agents subscribe to result updates
 - Rate Limiting — FREE for everyone (track usage for now, add paid tiers later)
 
-## User Personas
-1. **AI Developer** - Needs structured data access for their AI agents
-2. **Bot Creator** - Wants to connect agents to world knowledge
-3. **Automation Engineer** - Requires reliable API with usage tracking
-
-## Core Requirements (Static)
-- [x] Agent Query API with JSON in/out
+## Core Requirements (All Complete)
+- [x] Agent Query API with JSON in/out (Meilisearch-powered)
 - [x] Translation Layer (web crawler with structured data extraction)
 - [x] Agent Registry with capabilities
 - [x] API Key Authentication (X-API-Key header)
@@ -28,47 +23,55 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Scheduled crawling for content freshness
 - [x] Bulk crawl endpoint for batch processing
 - [x] API docs page with interactive examples
+- [x] Webhook delivery logs in dashboard
+- [x] Content source management UI
+- [x] Crawl history tracking
 
 ## What's Been Implemented (Jan 2026)
 
-### Backend (FastAPI + MongoDB + Meilisearch + Redis)
+### Backend Endpoints
 - `/api/auth/*` - Session management with Emergent OAuth
-- `/api/keys` - API Key CRUD (create, list, revoke)
+- `/api/keys` - API Key CRUD
 - `/api/agents` - Agent Registry CRUD
-- `/api/webhooks` - Webhook subscription management with Redis queue
+- `/api/webhooks` - Webhook subscriptions
+- `/api/webhooks/deliveries` - Webhook delivery logs
+- `/api/webhooks/deliveries/stats` - Delivery statistics
 - `/api/search` - Agent Query API with Meilisearch
-- `/api/crawl` - Single URL crawl endpoint
-- `/api/crawl/bulk` - Bulk crawl endpoint (up to 100 URLs)
-- `/api/crawl/jobs` - Track bulk crawl job status
-- `/api/crawl/schedule` - Scheduled crawling (hourly/daily/weekly)
-- `/api/usage/*` - Analytics (tracking only, no limits)
-- `/api/content` - Crawled content listing
+- `/api/crawl` - Single URL crawl
+- `/api/crawl/bulk` - Bulk crawl (up to 100 URLs)
+- `/api/crawl/jobs` - Track bulk crawl jobs
+- `/api/crawl/schedule` - Scheduled crawling
+- `/api/crawl/history` - Crawl history tracking
+- `/api/crawl/history/stats` - Crawl statistics
+- `/api/sources` - Content source management
+- `/api/usage/*` - Analytics
 - `/api/docs/reference` - Full API documentation
 
-### Frontend (React + Tailwind + Shadcn)
-- Landing Page (hero, features, single free pricing)
-- API Docs Page (quick start, auth, endpoints, code examples)
-- Dashboard (stats, charts, quick actions)
+### Frontend Pages
+- Landing Page (hero, features, free pricing)
+- API Docs Page (`/docs`) - Complete API reference
+- Dashboard - Stats, charts, quick actions
 - API Keys Management
 - Agent Registry
+- Content Sources (`/sources`) - Manage URLs to crawl
 - Webhooks Management
+- Webhook Deliveries (`/webhooks/deliveries`) - Delivery logs
 - Search Test Interface
+- Crawl History (`/history`) - All crawl operations
 - Analytics Dashboard
 - Settings/Profile Page
 
 ### Infrastructure
-- Meilisearch: Full-text search with filtering (55ms avg)
+- Meilisearch: Full-text search (55ms avg)
 - Redis: Webhook delivery queue with 3 retries
 - MongoDB: Data persistence
 - Background Tasks: Scheduled crawl runner, webhook processor
 
-## Pricing Strategy
-- **Currently**: FREE for everyone, unlimited usage
-- **Future**: Add paid tiers once we have users
+## Pricing
+- **Current**: FREE for everyone, unlimited usage
+- **Future**: Add paid tiers when ready
 
-## Prioritized Backlog
-
-### P0 (Critical) - DONE
+## Completed Backlog
 - [x] Core API endpoints
 - [x] Authentication flow
 - [x] Dashboard UI
@@ -78,23 +81,13 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Scheduled crawling
 - [x] Bulk crawl endpoint
 - [x] API docs page
+- [x] Webhook delivery logs
+- [x] Content source management
+- [x] Crawl history tracking
 
-### P1 (High Priority)
-- [ ] Webhook delivery logs in dashboard
-- [ ] Content source management UI
+## Future Enhancements
 - [ ] Search result ranking improvements
-- [ ] Crawl history and versioning
-
-### P2 (Medium Priority)
+- [ ] Custom crawl rules per domain
 - [ ] Team/Organization support
 - [ ] Export functionality
-- [ ] Advanced filters in search
-- [ ] Custom crawl rules per domain
-
-### P3 (On Hold)
-- [ ] Stripe billing (add later when ready for paid tiers)
-
-## Next Tasks
-1. Add webhook delivery logs to dashboard
-2. Build content source management UI
-3. Implement crawl history tracking
+- [ ] Stripe billing (when ready for paid tiers)

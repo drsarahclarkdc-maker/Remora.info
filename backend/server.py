@@ -250,6 +250,58 @@ class ScheduledCrawlCreate(BaseModel):
     url: str
     frequency: str = "daily"
 
+class WebhookDeliveryLog(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    delivery_id: str
+    webhook_id: str
+    user_id: str
+    event: str
+    url: str
+    status: str  # success, failed, pending
+    status_code: Optional[int] = None
+    attempts: int = 0
+    error_message: Optional[str] = None
+    payload: Dict[str, Any] = {}
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    delivered_at: Optional[datetime] = None
+
+class CrawlHistory(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    history_id: str
+    content_id: str
+    url: str
+    title: str
+    content_hash: str  # To detect changes
+    word_count: int
+    status: str  # success, failed
+    error_message: Optional[str] = None
+    crawled_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    source: str = "manual"  # manual, scheduled, bulk
+
+class ContentSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    source_id: str
+    user_id: str
+    name: str
+    url: str
+    domain: str
+    crawl_frequency: Optional[str] = None  # None = manual only
+    is_active: bool = True
+    last_crawl: Optional[datetime] = None
+    last_status: Optional[str] = None
+    content_count: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ContentSourceCreate(BaseModel):
+    name: str
+    url: str
+    crawl_frequency: Optional[str] = None
+
+class ContentSourceUpdate(BaseModel):
+    name: Optional[str] = None
+    crawl_frequency: Optional[str] = None
+    is_active: Optional[bool] = None
+
 class WebhookDelivery(BaseModel):
     delivery_id: str
     webhook_id: str
@@ -367,9 +419,11 @@ async def queue_webhook_delivery(event: str, payload: Dict[str, Any], user_id: s
     ).to_list(100)
     
     for webhook in webhooks:
+        delivery_id = f"del_{uuid.uuid4().hex[:12]}"
         delivery = {
-            "delivery_id": f"del_{uuid.uuid4().hex[:12]}",
+            "delivery_id": delivery_id,
             "webhook_id": webhook["webhook_id"],
+            "user_id": user_id,
             "url": webhook["url"],
             "secret": webhook["secret"],
             "event": event,
@@ -378,6 +432,20 @@ async def queue_webhook_delivery(event: str, payload: Dict[str, Any], user_id: s
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         redis_client.lpush("webhook_queue", json.dumps(delivery))
+        
+        # Create initial delivery log entry
+        log_entry = {
+            "delivery_id": delivery_id,
+            "webhook_id": webhook["webhook_id"],
+            "user_id": user_id,
+            "event": event,
+            "url": webhook["url"],
+            "status": "pending",
+            "attempts": 0,
+            "payload": payload,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.webhook_delivery_logs.insert_one(log_entry)
     
     logger.info(f"Queued {len(webhooks)} webhook deliveries for event: {event}")
 
@@ -407,31 +475,81 @@ async def process_webhook_queue():
                 "X-Remora-Delivery": delivery["delivery_id"]
             }
             
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    delivery["url"],
-                    json=delivery["payload"],
-                    headers=headers
-                )
-                
-                if response.status_code >= 200 and response.status_code < 300:
-                    # Success - update webhook stats
-                    await db.webhooks.update_one(
-                        {"webhook_id": delivery["webhook_id"]},
-                        {
-                            "$inc": {"delivery_count": 1},
-                            "$set": {"last_delivery": datetime.now(timezone.utc).isoformat()}
-                        }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        delivery["url"],
+                        json=delivery["payload"],
+                        headers=headers
                     )
-                    logger.info(f"Webhook delivered: {delivery['delivery_id']}")
-                else:
-                    # Failed - retry if attempts < 3
-                    delivery["attempts"] += 1
-                    if delivery["attempts"] < 3:
-                        redis_client.lpush("webhook_queue", json.dumps(delivery))
-                        logger.warning(f"Webhook delivery failed, retrying: {delivery['delivery_id']}")
+                    
+                    if response.status_code >= 200 and response.status_code < 300:
+                        # Success - update webhook stats and log
+                        await db.webhooks.update_one(
+                            {"webhook_id": delivery["webhook_id"]},
+                            {
+                                "$inc": {"delivery_count": 1},
+                                "$set": {"last_delivery": datetime.now(timezone.utc).isoformat()}
+                            }
+                        )
+                        await db.webhook_delivery_logs.update_one(
+                            {"delivery_id": delivery["delivery_id"]},
+                            {"$set": {
+                                "status": "success",
+                                "status_code": response.status_code,
+                                "attempts": delivery["attempts"] + 1,
+                                "delivered_at": datetime.now(timezone.utc).isoformat()
+                            }}
+                        )
+                        logger.info(f"Webhook delivered: {delivery['delivery_id']}")
                     else:
-                        logger.error(f"Webhook delivery failed permanently: {delivery['delivery_id']}")
+                        # Failed - retry if attempts < 3
+                        delivery["attempts"] += 1
+                        if delivery["attempts"] < 3:
+                            redis_client.lpush("webhook_queue", json.dumps(delivery))
+                            await db.webhook_delivery_logs.update_one(
+                                {"delivery_id": delivery["delivery_id"]},
+                                {"$set": {
+                                    "status": "retrying",
+                                    "status_code": response.status_code,
+                                    "attempts": delivery["attempts"],
+                                    "error_message": f"HTTP {response.status_code}"
+                                }}
+                            )
+                            logger.warning(f"Webhook delivery failed, retrying: {delivery['delivery_id']}")
+                        else:
+                            await db.webhook_delivery_logs.update_one(
+                                {"delivery_id": delivery["delivery_id"]},
+                                {"$set": {
+                                    "status": "failed",
+                                    "status_code": response.status_code,
+                                    "attempts": delivery["attempts"],
+                                    "error_message": f"Failed after 3 attempts: HTTP {response.status_code}"
+                                }}
+                            )
+                            logger.error(f"Webhook delivery failed permanently: {delivery['delivery_id']}")
+            except Exception as req_error:
+                delivery["attempts"] += 1
+                error_msg = str(req_error)[:200]
+                if delivery["attempts"] < 3:
+                    redis_client.lpush("webhook_queue", json.dumps(delivery))
+                    await db.webhook_delivery_logs.update_one(
+                        {"delivery_id": delivery["delivery_id"]},
+                        {"$set": {
+                            "status": "retrying",
+                            "attempts": delivery["attempts"],
+                            "error_message": error_msg
+                        }}
+                    )
+                else:
+                    await db.webhook_delivery_logs.update_one(
+                        {"delivery_id": delivery["delivery_id"]},
+                        {"$set": {
+                            "status": "failed",
+                            "attempts": delivery["attempts"],
+                            "error_message": f"Failed after 3 attempts: {error_msg}"
+                        }}
+                    )
                         
         except Exception as e:
             logger.error(f"Webhook processing error: {e}")
@@ -955,6 +1073,11 @@ async def crawl_website(crawl_request: CrawlRequest, background_tasks: Backgroun
     content_id = f"content_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     
+    # Check if URL already exists
+    existing = await db.crawled_content.find_one({"url": data["url"]}, {"_id": 0})
+    if existing:
+        content_id = existing["content_id"]
+    
     content = CrawledContent(
         content_id=content_id,
         url=data["url"],
@@ -978,6 +1101,21 @@ async def crawl_website(crawl_request: CrawlRequest, background_tasks: Backgroun
         upsert=True
     )
     
+    # Save crawl history
+    content_hash = hashlib.md5(data["content"].encode()).hexdigest()
+    history_entry = {
+        "history_id": f"hist_{uuid.uuid4().hex[:12]}",
+        "content_id": content_id,
+        "url": data["url"],
+        "title": data["title"],
+        "content_hash": content_hash,
+        "word_count": len(data["content"].split()),
+        "status": "success",
+        "source": "manual",
+        "crawled_at": now.isoformat()
+    }
+    await db.crawl_history.insert_one(history_entry)
+    
     # Index in Meilisearch
     if MEILI_AVAILABLE and meili_client:
         try:
@@ -987,9 +1125,10 @@ async def crawl_website(crawl_request: CrawlRequest, background_tasks: Backgroun
             logger.warning(f"Failed to index in Meilisearch: {e}")
     
     # Queue webhook notification
+    event_type = "content.updated" if existing else "content.new"
     background_tasks.add_task(
         queue_webhook_delivery,
-        "content.new",
+        event_type,
         {"content_id": content_id, "url": data["url"], "title": data["title"]},
         user.user_id
     )
@@ -1321,6 +1460,340 @@ async def run_scheduled_crawls():
         except Exception as e:
             logger.error(f"Scheduled crawl runner error: {e}")
             await asyncio.sleep(60)
+
+# ==================== Webhook Delivery Logs ====================
+
+@api_router.get("/webhooks/deliveries")
+async def list_webhook_deliveries(user: User = Depends(get_current_user), limit: int = 50):
+    """List webhook delivery logs for current user"""
+    logs = await db.webhook_delivery_logs.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    return logs
+
+@api_router.get("/webhooks/{webhook_id}/deliveries")
+async def list_webhook_deliveries_by_id(webhook_id: str, user: User = Depends(get_current_user), limit: int = 50):
+    """List delivery logs for a specific webhook"""
+    # Verify webhook belongs to user
+    webhook = await db.webhooks.find_one({"webhook_id": webhook_id, "user_id": user.user_id})
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    
+    logs = await db.webhook_delivery_logs.find(
+        {"webhook_id": webhook_id},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    return logs
+
+@api_router.get("/webhooks/deliveries/stats")
+async def get_webhook_delivery_stats(user: User = Depends(get_current_user)):
+    """Get webhook delivery statistics"""
+    total = await db.webhook_delivery_logs.count_documents({"user_id": user.user_id})
+    success = await db.webhook_delivery_logs.count_documents({"user_id": user.user_id, "status": "success"})
+    failed = await db.webhook_delivery_logs.count_documents({"user_id": user.user_id, "status": "failed"})
+    pending = await db.webhook_delivery_logs.count_documents({"user_id": user.user_id, "status": {"$in": ["pending", "retrying"]}})
+    
+    return {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "pending": pending,
+        "success_rate": round((success / total * 100) if total > 0 else 0, 2)
+    }
+
+# ==================== Content Sources ====================
+
+@api_router.get("/sources")
+async def list_content_sources(user: User = Depends(get_current_user)):
+    """List all content sources for current user"""
+    sources = await db.content_sources.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    
+    return sources
+
+@api_router.post("/sources")
+async def create_content_source(source_data: ContentSourceCreate, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
+    """Create a new content source"""
+    parsed = urlparse(source_data.url)
+    domain = parsed.netloc
+    
+    # Check for duplicate
+    existing = await db.content_sources.find_one({
+        "user_id": user.user_id,
+        "url": source_data.url
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Source URL already exists")
+    
+    source = ContentSource(
+        source_id=f"src_{uuid.uuid4().hex[:12]}",
+        user_id=user.user_id,
+        name=source_data.name,
+        url=source_data.url,
+        domain=domain,
+        crawl_frequency=source_data.crawl_frequency
+    )
+    
+    doc = source.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.content_sources.insert_one(doc)
+    
+    # Do initial crawl
+    try:
+        data = await crawl_url(source_data.url)
+        content_id = f"content_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc)
+        
+        content_doc = {
+            "content_id": content_id,
+            "url": data["url"],
+            "title": data["title"],
+            "description": data["description"],
+            "content": data["content"],
+            "structured_data": data["structured_data"],
+            "domain": data["domain"],
+            "source_id": source.source_id,
+            "crawled_at": now.isoformat(),
+            "last_updated": now.isoformat()
+        }
+        
+        await db.crawled_content.update_one(
+            {"url": data["url"]},
+            {"$set": content_doc},
+            upsert=True
+        )
+        
+        # Save crawl history
+        content_hash = hashlib.md5(data["content"].encode()).hexdigest()
+        history_entry = {
+            "history_id": f"hist_{uuid.uuid4().hex[:12]}",
+            "content_id": content_id,
+            "url": data["url"],
+            "title": data["title"],
+            "content_hash": content_hash,
+            "word_count": len(data["content"].split()),
+            "status": "success",
+            "source": "source",
+            "crawled_at": now.isoformat()
+        }
+        await db.crawl_history.insert_one(history_entry)
+        
+        if MEILI_AVAILABLE and meili_client:
+            meili_client.index("content").add_documents([content_doc])
+        
+        await db.content_sources.update_one(
+            {"source_id": source.source_id},
+            {"$set": {
+                "last_crawl": now.isoformat(),
+                "last_status": "success",
+                "content_count": 1
+            }}
+        )
+        
+    except Exception as e:
+        await db.content_sources.update_one(
+            {"source_id": source.source_id},
+            {"$set": {"last_status": f"failed: {str(e)[:100]}"}}
+        )
+    
+    # If scheduled, also create a scheduled crawl
+    if source_data.crawl_frequency:
+        now = datetime.now(timezone.utc)
+        if source_data.crawl_frequency == "hourly":
+            next_crawl = now + timedelta(hours=1)
+        elif source_data.crawl_frequency == "daily":
+            next_crawl = now + timedelta(days=1)
+        else:
+            next_crawl = now + timedelta(weeks=1)
+        
+        schedule_doc = {
+            "schedule_id": f"sched_{uuid.uuid4().hex[:12]}",
+            "user_id": user.user_id,
+            "url": source_data.url,
+            "frequency": source_data.crawl_frequency,
+            "is_active": True,
+            "source_id": source.source_id,
+            "next_crawl": next_crawl.isoformat(),
+            "created_at": now.isoformat()
+        }
+        await db.scheduled_crawls.insert_one(schedule_doc)
+    
+    return source.model_dump()
+
+@api_router.put("/sources/{source_id}")
+async def update_content_source(source_id: str, source_data: ContentSourceUpdate, user: User = Depends(get_current_user)):
+    """Update a content source"""
+    update_data = {k: v for k, v in source_data.model_dump().items() if v is not None}
+    
+    result = await db.content_sources.update_one(
+        {"source_id": source_id, "user_id": user.user_id},
+        {"$set": update_data}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    source = await db.content_sources.find_one({"source_id": source_id}, {"_id": 0})
+    return source
+
+@api_router.delete("/sources/{source_id}")
+async def delete_content_source(source_id: str, user: User = Depends(get_current_user)):
+    """Delete a content source"""
+    result = await db.content_sources.delete_one({
+        "source_id": source_id,
+        "user_id": user.user_id
+    })
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    # Also delete associated scheduled crawls
+    await db.scheduled_crawls.delete_many({"source_id": source_id})
+    
+    return {"message": "Source deleted"}
+
+@api_router.post("/sources/{source_id}/crawl")
+async def crawl_content_source(source_id: str, user: User = Depends(get_current_user)):
+    """Manually trigger a crawl for a content source"""
+    source = await db.content_sources.find_one({
+        "source_id": source_id,
+        "user_id": user.user_id
+    })
+    
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    try:
+        data = await crawl_url(source["url"])
+        content_id = f"content_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc)
+        
+        # Check if URL exists
+        existing = await db.crawled_content.find_one({"url": data["url"]}, {"_id": 0})
+        if existing:
+            content_id = existing["content_id"]
+        
+        content_doc = {
+            "content_id": content_id,
+            "url": data["url"],
+            "title": data["title"],
+            "description": data["description"],
+            "content": data["content"],
+            "structured_data": data["structured_data"],
+            "domain": data["domain"],
+            "source_id": source_id,
+            "crawled_at": now.isoformat(),
+            "last_updated": now.isoformat()
+        }
+        
+        await db.crawled_content.update_one(
+            {"url": data["url"]},
+            {"$set": content_doc},
+            upsert=True
+        )
+        
+        # Save crawl history
+        content_hash = hashlib.md5(data["content"].encode()).hexdigest()
+        history_entry = {
+            "history_id": f"hist_{uuid.uuid4().hex[:12]}",
+            "content_id": content_id,
+            "url": data["url"],
+            "title": data["title"],
+            "content_hash": content_hash,
+            "word_count": len(data["content"].split()),
+            "status": "success",
+            "source": "manual",
+            "crawled_at": now.isoformat()
+        }
+        await db.crawl_history.insert_one(history_entry)
+        
+        if MEILI_AVAILABLE and meili_client:
+            meili_client.index("content").add_documents([content_doc])
+        
+        await db.content_sources.update_one(
+            {"source_id": source_id},
+            {"$set": {
+                "last_crawl": now.isoformat(),
+                "last_status": "success"
+            },
+            "$inc": {"content_count": 1 if not existing else 0}}
+        )
+        
+        return {"status": "success", "content_id": content_id, "title": data["title"]}
+        
+    except Exception as e:
+        await db.content_sources.update_one(
+            {"source_id": source_id},
+            {"$set": {"last_status": f"failed: {str(e)[:100]}"}}
+        )
+        raise HTTPException(status_code=400, detail=f"Crawl failed: {str(e)}")
+
+# ==================== Crawl History ====================
+
+@api_router.get("/crawl/history")
+async def list_crawl_history(user: User = Depends(get_current_user), limit: int = 50):
+    """List crawl history"""
+    # Get user's content IDs first
+    history = await db.crawl_history.find(
+        {},
+        {"_id": 0}
+    ).sort("crawled_at", -1).limit(limit).to_list(limit)
+    
+    return history
+
+@api_router.get("/crawl/history/{content_id}")
+async def get_crawl_history_for_content(content_id: str, user: User = Depends(get_current_user)):
+    """Get crawl history for a specific content"""
+    history = await db.crawl_history.find(
+        {"content_id": content_id},
+        {"_id": 0}
+    ).sort("crawled_at", -1).to_list(50)
+    
+    return history
+
+@api_router.get("/crawl/history/stats")
+async def get_crawl_history_stats(user: User = Depends(get_current_user)):
+    """Get crawl history statistics"""
+    total = await db.crawl_history.count_documents({})
+    success = await db.crawl_history.count_documents({"status": "success"})
+    failed = await db.crawl_history.count_documents({"status": "failed"})
+    
+    # Get crawls by source type
+    by_source = {}
+    for source in ["manual", "scheduled", "bulk", "source"]:
+        count = await db.crawl_history.count_documents({"source": source})
+        by_source[source] = count
+    
+    # Get recent crawl counts by day
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_counts = []
+    for i in range(7):
+        day_start = today - timedelta(days=i)
+        day_end = day_start + timedelta(days=1)
+        count = await db.crawl_history.count_documents({
+            "crawled_at": {
+                "$gte": day_start.isoformat(),
+                "$lt": day_end.isoformat()
+            }
+        })
+        daily_counts.append({
+            "date": day_start.strftime("%Y-%m-%d"),
+            "crawls": count
+        })
+    
+    return {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "success_rate": round((success / total * 100) if total > 0 else 0, 2),
+        "by_source": by_source,
+        "daily_counts": list(reversed(daily_counts))
+    }
 
 # ==================== Usage & Analytics Routes ====================
 

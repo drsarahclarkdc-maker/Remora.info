@@ -19,7 +19,10 @@ import {
   Settings,
   LogOut,
   Menu,
-  X
+  X,
+  Globe,
+  History,
+  Send
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -27,8 +30,11 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'API Keys', href: '/keys', icon: Key },
   { name: 'Agents', href: '/agents', icon: Bot },
+  { name: 'Sources', href: '/sources', icon: Globe },
   { name: 'Webhooks', href: '/webhooks', icon: Webhook },
+  { name: 'Deliveries', href: '/webhooks/deliveries', icon: Send },
   { name: 'Search Test', href: '/search', icon: Search },
+  { name: 'Crawl History', href: '/history', icon: History },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
 ];
 

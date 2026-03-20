@@ -10,10 +10,13 @@ import Dashboard from "@/pages/Dashboard";
 import APIKeys from "@/pages/APIKeys";
 import Agents from "@/pages/Agents";
 import Webhooks from "@/pages/Webhooks";
+import WebhookDeliveries from "@/pages/WebhookDeliveries";
 import SearchTest from "@/pages/SearchTest";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
 import ApiDocs from "@/pages/ApiDocs";
+import ContentSources from "@/pages/ContentSources";
+import CrawlHistory from "@/pages/CrawlHistory";
 
 // Context
 import { AuthProvider, useAuth } from "@/context/AuthContext";
@@ -59,8 +62,11 @@ const AppRouter = () => {
       <Route path="/keys" element={<ProtectedRoute><APIKeys /></ProtectedRoute>} />
       <Route path="/agents" element={<ProtectedRoute><Agents /></ProtectedRoute>} />
       <Route path="/webhooks" element={<ProtectedRoute><Webhooks /></ProtectedRoute>} />
+      <Route path="/webhooks/deliveries" element={<ProtectedRoute><WebhookDeliveries /></ProtectedRoute>} />
       <Route path="/search" element={<ProtectedRoute><SearchTest /></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+      <Route path="/sources" element={<ProtectedRoute><ContentSources /></ProtectedRoute>} />
+      <Route path="/history" element={<ProtectedRoute><CrawlHistory /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
     </Routes>
   );

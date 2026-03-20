@@ -12,10 +12,12 @@ import {
   Check,
   AlertTriangle,
   ArrowRight,
+  ArrowDown,
   Clock,
   Search,
   Globe,
   FileText,
+  XCircle,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -29,18 +31,15 @@ const PLAN_FEATURES = {
   enterprise: ['Custom credit volume', 'Everything in Scale', 'Dedicated API endpoints', 'Private deployment', 'Custom SLAs', '24/7 support'],
 };
 
-const OPERATION_ICONS = {
-  search: Search,
-  crawl: Globe,
-  content_extract: FileText,
-};
+const PLAN_ORDER = ['free', 'starter', 'growth', 'scale', 'enterprise'];
 
 const Billing = () => {
   const [usage, setUsage] = useState(null);
   const [plans, setPlans] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [checkoutLoading, setCheckoutLoading] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
+  const [cancelConfirm, setCancelConfirm] = useState(false);
 
   const fetchUsage = useCallback(async () => {
     try {
@@ -80,7 +79,7 @@ const Billing = () => {
     if (!sessionId) return;
 
     let attempts = 0;
-    const maxAttempts = 8;
+    const maxAttempts = 10;
 
     const poll = async () => {
       try {
@@ -89,7 +88,7 @@ const Billing = () => {
         const data = await res.json();
 
         if (data.payment_status === 'paid') {
-          toast.success('Payment successful! Your plan has been upgraded.');
+          toast.success('Payment successful! Your subscription is active.');
           window.history.replaceState({}, '', '/billing');
           fetchUsage();
           fetchTransactions();
@@ -108,23 +107,19 @@ const Billing = () => {
       }
     };
 
-    toast.info('Checking payment status...');
+    toast.info('Verifying payment...');
     poll();
   }, [fetchUsage, fetchTransactions]);
 
-  const handleCheckout = async (planId) => {
-    setCheckoutLoading(planId);
+  const handleSubscribe = async (planId) => {
+    setActionLoading(planId);
     try {
       const res = await fetch(`${API}/billing/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({
-          plan_id: planId,
-          origin_url: window.location.origin,
-        }),
+        body: JSON.stringify({ plan_id: planId, origin_url: window.location.origin }),
       });
-
       if (res.ok) {
         const data = await res.json();
         if (data.url) window.location.href = data.url;
@@ -135,7 +130,56 @@ const Billing = () => {
     } catch {
       toast.error('Failed to start checkout');
     } finally {
-      setCheckoutLoading(null);
+      setActionLoading(null);
+    }
+  };
+
+  const handleChangePlan = async (planId) => {
+    setActionLoading(planId);
+    try {
+      const res = await fetch(`${API}/billing/change-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ plan_id: planId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message);
+        fetchUsage();
+        fetchTransactions();
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || 'Failed to change plan');
+      }
+    } catch {
+      toast.error('Failed to change plan');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleCancel = async () => {
+    setActionLoading('cancel');
+    try {
+      const res = await fetch(`${API}/billing/cancel`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message);
+        setCancelConfirm(false);
+        fetchUsage();
+        fetchTransactions();
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || 'Failed to cancel subscription');
+      }
+    } catch {
+      toast.error('Failed to cancel subscription');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -150,24 +194,36 @@ const Billing = () => {
   }
 
   const currentPlan = usage?.plan || 'free';
+  const hasSubscription = usage?.has_subscription || false;
+  const currentPlanIdx = PLAN_ORDER.indexOf(currentPlan);
+
+  const getPlanAction = (planId) => {
+    if (planId === currentPlan) return 'current';
+    if (planId === 'free') return hasSubscription ? 'cancel' : 'included';
+    if (planId === 'enterprise') return 'contact';
+
+    const targetIdx = PLAN_ORDER.indexOf(planId);
+    if (hasSubscription) {
+      return targetIdx > currentPlanIdx ? 'upgrade' : 'downgrade';
+    }
+    return 'subscribe';
+  };
 
   return (
     <DashboardLayout>
       <div className="space-y-8" data-testid="billing-page">
-        {/* Header */}
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Billing</h1>
-          <p className="text-muted-foreground mt-1">Manage your plan, credits, and payment history.</p>
+          <p className="text-muted-foreground mt-1">Manage your subscription, credits, and payment history.</p>
         </div>
 
-        {/* Usage Alert */}
         {usage?.alert && (
           <Card className="border-yellow-500/30 bg-yellow-500/5">
             <CardContent className="flex items-center gap-3 py-4">
               <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0" />
               <p className="text-sm">
                 You've used <strong>{usage.usage_percentage}%</strong> of your monthly credits.
-                {currentPlan === 'free' ? ' Upgrade to get more.' : ' Consider upgrading your plan.'}
+                {currentPlan === 'free' ? ' Subscribe to get more.' : ' Consider upgrading your plan.'}
               </p>
             </CardContent>
           </Card>
@@ -186,9 +242,16 @@ const Billing = () => {
                   <p className="font-semibold text-lg" data-testid="current-plan">{usage?.plan_name || 'Free'}</p>
                 </div>
               </div>
-              {usage?.plan_price > 0 && (
-                <p className="text-sm text-muted-foreground">${usage.plan_price}/month</p>
-              )}
+              <div className="flex items-center gap-2">
+                {usage?.plan_price > 0 && (
+                  <p className="text-sm text-muted-foreground">${usage.plan_price}/month</p>
+                )}
+                {hasSubscription && (
+                  <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+                    Active Subscription
+                  </Badge>
+                )}
+              </div>
             </CardContent>
           </Card>
 
@@ -205,10 +268,7 @@ const Billing = () => {
                   </p>
                 </div>
               </div>
-              <Progress
-                value={100 - (usage?.usage_percentage || 0)}
-                className="h-2"
-              />
+              <Progress value={100 - (usage?.usage_percentage || 0)} className="h-2" />
               <p className="text-xs text-muted-foreground mt-2">
                 {(usage?.credits_used || 0).toLocaleString()} / {(usage?.credits_total || 0).toLocaleString()} used
               </p>
@@ -230,7 +290,9 @@ const Billing = () => {
                   </p>
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">Credits reset at the start of each billing cycle</p>
+              <p className="text-xs text-muted-foreground">
+                {hasSubscription ? 'Auto-renews monthly via Stripe' : 'Credits reset at the start of each billing cycle'}
+              </p>
             </CardContent>
           </Card>
         </div>
@@ -240,7 +302,8 @@ const Billing = () => {
           <h2 className="text-xl font-semibold mb-4">Plans</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             {plans.map((plan) => {
-              const isCurrent = plan.plan_id === currentPlan;
+              const action = getPlanAction(plan.plan_id);
+              const isCurrent = action === 'current';
               const isPopular = plan.plan_id === 'growth';
               const features = PLAN_FEATURES[plan.plan_id] || [];
 
@@ -281,44 +344,54 @@ const Billing = () => {
                         </li>
                       ))}
                     </ul>
-                    {isCurrent ? (
-                      <Button variant="outline" className="w-full" disabled data-testid={`plan-btn-${plan.plan_id}`}>
-                        Current Plan
-                      </Button>
-                    ) : plan.plan_id === 'free' ? (
-                      <Button variant="outline" className="w-full" disabled>
-                        Included
-                      </Button>
-                    ) : plan.plan_id === 'enterprise' ? (
-                      <Button
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => window.location.href = 'mailto:enterprise@remora.info?subject=Enterprise%20Plan%20Inquiry'}
-                        data-testid={`plan-btn-${plan.plan_id}`}
-                      >
-                        Contact Us
-                      </Button>
-                    ) : (
-                      <Button
-                        className="w-full"
-                        onClick={() => handleCheckout(plan.plan_id)}
-                        disabled={!!checkoutLoading}
-                        data-testid={`plan-btn-${plan.plan_id}`}
-                      >
-                        {checkoutLoading === plan.plan_id ? (
-                          <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
-                        ) : (
-                          <ArrowRight className="w-4 h-4 mr-2" />
-                        )}
-                        {currentPlan === 'free' ? 'Get Started' : 'Upgrade'}
-                      </Button>
-                    )}
+                    <PlanButton
+                      action={action}
+                      planId={plan.plan_id}
+                      loading={actionLoading}
+                      onSubscribe={handleSubscribe}
+                      onChangePlan={handleChangePlan}
+                      onCancelClick={() => setCancelConfirm(true)}
+                    />
                   </CardContent>
                 </Card>
               );
             })}
           </div>
         </div>
+
+        {/* Cancel Confirmation */}
+        {cancelConfirm && (
+          <Card className="border-red-500/30 bg-red-500/5">
+            <CardContent className="py-5">
+              <div className="flex items-start gap-3">
+                <XCircle className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="font-medium text-sm">Cancel your subscription?</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    You'll immediately revert to the Free plan with 3,000 credits/month. Any prorated credit will be applied to your Stripe balance.
+                  </p>
+                  <div className="flex gap-3 mt-4">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleCancel}
+                      disabled={actionLoading === 'cancel'}
+                      data-testid="confirm-cancel-btn"
+                    >
+                      {actionLoading === 'cancel' ? (
+                        <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
+                      ) : null}
+                      Yes, cancel subscription
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setCancelConfirm(false)}>
+                      Keep my plan
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Credit Costs */}
         <Card className="bg-card/50 border-border/50">
@@ -355,7 +428,8 @@ const Billing = () => {
             <CardContent>
               <div className="space-y-2">
                 {usage.recent_usage.slice(0, 10).map((item, i) => {
-                  const Icon = OPERATION_ICONS[item.operation] || Zap;
+                  const icons = { search: Search, crawl: Globe, content_extract: FileText };
+                  const Icon = icons[item.operation] || Zap;
                   return (
                     <div key={i} className="flex items-center justify-between p-2 rounded-lg hover:bg-muted/30">
                       <div className="flex items-center gap-3">
@@ -387,22 +461,26 @@ const Billing = () => {
                 {transactions.map((txn, i) => (
                   <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
                     <div>
-                      <p className="text-sm font-medium capitalize">{txn.plan_id} Plan</p>
+                      <p className="text-sm font-medium capitalize">
+                        {txn.type === 'cancellation' ? 'Cancelled' : txn.type === 'plan_change' ? `Changed to ${txn.plan_id}` : `${txn.plan_id} Plan`}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {new Date(txn.created_at).toLocaleDateString()}
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-sm font-mono">${txn.amount}</span>
+                      {txn.amount > 0 && <span className="text-sm font-mono">${txn.amount}</span>}
                       <Badge
                         variant={txn.payment_status === 'paid' ? 'default' : 'secondary'}
                         className={`text-xs ${
                           txn.payment_status === 'paid'
                             ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                            : txn.type === 'cancellation'
+                            ? 'bg-red-500/10 text-red-500 border-red-500/20'
                             : ''
                         }`}
                       >
-                        {txn.payment_status}
+                        {txn.type === 'cancellation' ? 'cancelled' : txn.payment_status}
                       </Badge>
                     </div>
                   </div>
@@ -414,6 +492,91 @@ const Billing = () => {
       </div>
     </DashboardLayout>
   );
+};
+
+const PlanButton = ({ action, planId, loading, onSubscribe, onChangePlan, onCancelClick }) => {
+  const isLoading = loading === planId;
+  const Spinner = () => (
+    <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
+  );
+
+  switch (action) {
+    case 'current':
+      return (
+        <Button variant="outline" className="w-full" disabled data-testid={`plan-btn-${planId}`}>
+          Current Plan
+        </Button>
+      );
+    case 'included':
+      return (
+        <Button variant="outline" className="w-full" disabled>
+          Included
+        </Button>
+      );
+    case 'contact':
+      return (
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => window.location.href = 'mailto:enterprise@remora.info?subject=Enterprise%20Plan%20Inquiry'}
+          data-testid={`plan-btn-${planId}`}
+        >
+          Contact Us
+        </Button>
+      );
+    case 'subscribe':
+      return (
+        <Button
+          className="w-full"
+          onClick={() => onSubscribe(planId)}
+          disabled={!!loading}
+          data-testid={`plan-btn-${planId}`}
+        >
+          {isLoading ? <Spinner /> : <ArrowRight className="w-4 h-4 mr-2" />}
+          Subscribe
+        </Button>
+      );
+    case 'upgrade':
+      return (
+        <Button
+          className="w-full"
+          onClick={() => onChangePlan(planId)}
+          disabled={!!loading}
+          data-testid={`plan-btn-${planId}`}
+        >
+          {isLoading ? <Spinner /> : <ArrowRight className="w-4 h-4 mr-2" />}
+          Upgrade
+        </Button>
+      );
+    case 'downgrade':
+      return (
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => onChangePlan(planId)}
+          disabled={!!loading}
+          data-testid={`plan-btn-${planId}`}
+        >
+          {isLoading ? <Spinner /> : <ArrowDown className="w-4 h-4 mr-2" />}
+          Downgrade
+        </Button>
+      );
+    case 'cancel':
+      return (
+        <Button
+          variant="outline"
+          className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/5"
+          onClick={onCancelClick}
+          disabled={!!loading}
+          data-testid={`plan-btn-${planId}`}
+        >
+          <XCircle className="w-4 h-4 mr-2" />
+          Cancel to Free
+        </Button>
+      );
+    default:
+      return null;
+  }
 };
 
 export default Billing;

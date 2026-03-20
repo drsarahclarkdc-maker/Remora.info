@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 
 class RemoraAPITester:
-    def __init__(self, base_url="https://agent-index-pro.preview.emergentagent.com/api"):
+    def __init__(self, base_url="https://remora-staging.preview.emergentagent.com/api"):
         self.base_url = base_url
         self.session_token = None
         self.api_key = None

@@ -75,9 +75,9 @@ const LandingPage = () => {
     },
     {
       icon: Search,
-      title: 'Tiered Rate Limiting',
-      description: 'Free, Pro, and Enterprise tiers with flexible rate limits.',
-      code: 'X-RateLimit-Remaining: 9542'
+      title: 'Credit-Based Pricing',
+      description: 'Flexible credit system — 1 credit per search or crawl. Scale from free to enterprise.',
+      code: 'X-Credits-Remaining: 9542'
     }
   ];
 
@@ -85,11 +85,48 @@ const LandingPage = () => {
     {
       name: 'Free',
       price: '$0',
-      period: 'forever',
-      requests: 'Unlimited requests',
-      features: ['Full search API', 'Agent registration', 'Webhook subscriptions', 'Web crawler', 'Usage analytics'],
+      period: '/month',
+      credits: '3,000 credits/mo',
+      features: ['Basic search API', 'Single URL crawl', 'Agent registration', 'Usage analytics'],
       cta: 'Get Started Free',
+      popular: false
+    },
+    {
+      name: 'Starter',
+      price: '$29',
+      period: '/month',
+      credits: '10,000 credits/mo',
+      features: ['Everything in Free', 'Bulk crawl (100 URLs)', 'Scheduled crawling', 'Webhook deliveries', 'Email support'],
+      cta: 'Get Starter',
+      popular: false
+    },
+    {
+      name: 'Growth',
+      price: '$99',
+      period: '/month',
+      credits: '40,000 credits/mo',
+      features: ['Everything in Starter', 'Custom crawl rules', 'Search ranking configs', 'Priority support'],
+      cta: 'Get Growth',
       popular: true
+    },
+    {
+      name: 'Scale',
+      price: '$399',
+      period: '/month',
+      credits: '200,000 credits/mo',
+      features: ['Everything in Growth', 'Organization & teams', 'Dedicated support', 'SLA guarantee'],
+      cta: 'Get Scale',
+      popular: false
+    },
+    {
+      name: 'Enterprise',
+      price: 'Custom',
+      period: '',
+      credits: 'Custom volume',
+      features: ['Everything in Scale', 'Dedicated endpoints', 'Private deployment', 'Custom SLAs', '24/7 support'],
+      cta: 'Contact Us',
+      popular: false,
+      isEnterprise: true
     }
   ];
 
@@ -265,45 +302,48 @@ X-API-Key: rmr_aBc123...
             transition={{ duration: 0.4 }}
           >
             <h2 className="text-3xl md:text-5xl font-semibold tracking-tight mb-4">
-              Free for Everyone
+              Simple, Credit-Based Pricing
             </h2>
             <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-              No limits, no tiers, no credit card. Just build.
+              1 credit = 1 search or crawl. Start free, scale as you grow.
             </p>
           </motion.div>
 
-          <div className="max-w-md mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 max-w-7xl mx-auto">
             {pricingTiers.map((tier, index) => (
               <motion.div
                 key={tier.name}
                 initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
-                transition={{ duration: 0.4, delay: index * 0.1 }}
+                transition={{ duration: 0.4, delay: index * 0.08 }}
               >
-                <Card className={`h-full ${tier.popular ? 'border-primary/50 glow' : 'border-border/50'}`}>
-                  <CardContent className="p-6">
-                    {tier.popular && (
-                      <Badge className="mb-4 bg-primary text-primary-foreground">Currently Free</Badge>
-                    )}
-                    <h3 className="text-xl font-semibold mb-2">{tier.name}</h3>
-                    <div className="mb-4">
-                      <span className="text-4xl font-bold">{tier.price}</span>
-                      <span className="text-muted-foreground"> {tier.period}</span>
+                <Card className={`h-full relative ${tier.popular ? 'border-primary/50 ring-1 ring-primary/30' : 'border-border/50'}`}>
+                  {tier.popular && (
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                      <Badge className="bg-primary text-primary-foreground text-xs">Popular</Badge>
                     </div>
-                    <p className="text-sm text-muted-foreground mb-6">{tier.requests}</p>
-                    <ul className="space-y-3 mb-6">
+                  )}
+                  <CardContent className="p-5">
+                    <h3 className="text-lg font-semibold mb-2">{tier.name}</h3>
+                    <div className="mb-1">
+                      <span className="text-3xl font-bold">{tier.price}</span>
+                      {tier.period && <span className="text-muted-foreground text-sm">{tier.period}</span>}
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-5">{tier.credits}</p>
+                    <ul className="space-y-2 mb-5">
                       {tier.features.map((feature) => (
-                        <li key={feature} className="flex items-center gap-2 text-sm">
-                          <Check className="w-4 h-4 text-primary" />
-                          {feature}
+                        <li key={feature} className="flex items-start gap-2 text-sm">
+                          <Check className="w-3.5 h-3.5 text-primary mt-0.5 flex-shrink-0" />
+                          <span className="text-muted-foreground text-xs">{feature}</span>
                         </li>
                       ))}
                     </ul>
-                    <Button 
-                      className="w-full" 
+                    <Button
+                      className="w-full"
                       variant={tier.popular ? 'default' : 'outline'}
-                      onClick={handleGetStarted}
+                      size="sm"
+                      onClick={tier.isEnterprise ? () => window.location.href = 'mailto:enterprise@remora.info?subject=Enterprise%20Plan%20Inquiry' : handleGetStarted}
                       data-testid={`pricing-${tier.name.toLowerCase()}-btn`}
                     >
                       {tier.cta}

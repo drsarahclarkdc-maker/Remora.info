@@ -18,6 +18,9 @@ import {
   Globe,
   FileText,
   XCircle,
+  RefreshCw,
+  ToggleLeft,
+  ToggleRight,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -40,6 +43,8 @@ const Billing = () => {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
   const [cancelConfirm, setCancelConfirm] = useState(false);
+  const [billingSettings, setBillingSettings] = useState(null);
+  const [rechargePacks, setRechargePacks] = useState([]);
 
   const fetchUsage = useCallback(async () => {
     try {
@@ -68,9 +73,27 @@ const Billing = () => {
     }
   }, []);
 
+  const fetchBillingSettings = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/billing/settings`, { credentials: 'include' });
+      if (res.ok) setBillingSettings(await res.json());
+    } catch (e) {
+      console.error('Error fetching billing settings:', e);
+    }
+  }, []);
+
+  const fetchRechargePacks = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/billing/recharge-packs`);
+      if (res.ok) setRechargePacks(await res.json());
+    } catch (e) {
+      console.error('Error fetching recharge packs:', e);
+    }
+  }, []);
+
   useEffect(() => {
-    Promise.all([fetchUsage(), fetchPlans(), fetchTransactions()]).finally(() => setLoading(false));
-  }, [fetchUsage, fetchPlans, fetchTransactions]);
+    Promise.all([fetchUsage(), fetchPlans(), fetchTransactions(), fetchBillingSettings(), fetchRechargePacks()]).finally(() => setLoading(false));
+  }, [fetchUsage, fetchPlans, fetchTransactions, fetchBillingSettings, fetchRechargePacks]);
 
   // Poll for payment status if returning from Stripe
   useEffect(() => {
@@ -180,6 +203,27 @@ const Billing = () => {
       toast.error('Failed to cancel subscription');
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleAutoRechargeToggle = async (enabled, packId) => {
+    try {
+      const res = await fetch(`${API}/billing/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ enabled, pack_id: packId || billingSettings?.recharge_pack_id || 'medium' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message);
+        fetchBillingSettings();
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || 'Failed to update settings');
+      }
+    } catch {
+      toast.error('Failed to update settings');
     }
   };
 
@@ -392,6 +436,70 @@ const Billing = () => {
             </CardContent>
           </Card>
         )}
+
+        {/* Auto-Recharge Settings */}
+        <Card className="bg-card/50 border-border/50">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4" />
+                  Auto-Recharge
+                </CardTitle>
+                <CardDescription>Automatically add credits when you run out</CardDescription>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleAutoRechargeToggle(!billingSettings?.auto_recharge_enabled)}
+                disabled={!billingSettings?.has_payment_method && !billingSettings?.auto_recharge_enabled}
+                data-testid="auto-recharge-toggle"
+              >
+                {billingSettings?.auto_recharge_enabled ? (
+                  <ToggleRight className="w-8 h-8 text-emerald-500" />
+                ) : (
+                  <ToggleLeft className="w-8 h-8 text-muted-foreground" />
+                )}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {!billingSettings?.has_payment_method ? (
+              <p className="text-sm text-muted-foreground">Subscribe to a paid plan first to enable auto-recharge.</p>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  {billingSettings?.auto_recharge_enabled
+                    ? 'When credits run out, your payment method will be charged automatically.'
+                    : 'Enable to automatically purchase credits when your balance reaches zero.'}
+                </p>
+                {billingSettings?.auto_recharge_enabled && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="recharge-pack-options">
+                    {rechargePacks.map((pack) => {
+                      const isSelected = pack.pack_id === (billingSettings?.recharge_pack_id || 'medium');
+                      return (
+                        <button
+                          key={pack.pack_id}
+                          onClick={() => handleAutoRechargeToggle(true, pack.pack_id)}
+                          className={`p-3 rounded-lg border text-left transition-colors ${
+                            isSelected
+                              ? 'border-primary bg-primary/5'
+                              : 'border-border hover:border-primary/40'
+                          }`}
+                          data-testid={`recharge-pack-${pack.pack_id}`}
+                        >
+                          <p className="text-sm font-medium">{pack.name}</p>
+                          <p className="text-lg font-bold mt-1">${pack.price}</p>
+                          <p className="text-xs text-muted-foreground">{pack.credits.toLocaleString()} credits</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Credit Costs */}
         <Card className="bg-card/50 border-border/50">

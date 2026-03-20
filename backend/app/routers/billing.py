@@ -7,7 +7,7 @@ import asyncio
 import stripe
 
 from app.database import db
-from app.models import User, PLANS
+from app.models import User, PLANS, RECHARGE_PACKS
 from app.auth import get_current_user, get_user_credits
 
 logger = logging.getLogger(__name__)
@@ -550,3 +550,55 @@ async def _handle_subscription_deleted(sub_obj):
         }},
     )
     logger.info(f"Subscription {sub_id} deleted → user {billing['user_id']} reverted to Free")
+
+
+# ---------- Recharge Packs ----------
+
+@router.get("/billing/recharge-packs")
+async def list_recharge_packs():
+    return [{"pack_id": k, **v} for k, v in RECHARGE_PACKS.items()]
+
+
+# ---------- Auto-Recharge Settings ----------
+
+class AutoRechargeSettings(BaseModel):
+    enabled: bool
+    pack_id: str = "medium"
+
+
+@router.get("/billing/settings")
+async def get_billing_settings(user: User = Depends(get_current_user)):
+    billing = await db.user_billing.find_one({"user_id": user.user_id}, {"_id": 0})
+    return {
+        "auto_recharge_enabled": billing.get("auto_recharge_enabled", False) if billing else False,
+        "recharge_pack_id": billing.get("recharge_pack_id", "medium") if billing else "medium",
+        "has_payment_method": bool(billing.get("stripe_customer_id")) if billing else False,
+    }
+
+
+@router.put("/billing/settings")
+async def update_billing_settings(settings: AutoRechargeSettings, user: User = Depends(get_current_user)):
+    if settings.pack_id not in RECHARGE_PACKS:
+        raise HTTPException(status_code=400, detail="Invalid recharge pack. Choose small, medium, or large.")
+
+    billing = await db.user_billing.find_one({"user_id": user.user_id}, {"_id": 0})
+    if settings.enabled and (not billing or not billing.get("stripe_customer_id")):
+        raise HTTPException(
+            status_code=400,
+            detail="A payment method is required. Subscribe to a plan first to enable auto-recharge."
+        )
+
+    await db.user_billing.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "auto_recharge_enabled": settings.enabled,
+            "recharge_pack_id": settings.pack_id,
+        }},
+        upsert=True,
+    )
+
+    return {
+        "message": f"Auto-recharge {'enabled' if settings.enabled else 'disabled'}.",
+        "auto_recharge_enabled": settings.enabled,
+        "recharge_pack_id": settings.pack_id,
+    }

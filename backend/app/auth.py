@@ -3,10 +3,12 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import hashlib
 import uuid
+import asyncio
+import os
+import logging
 
 from app.database import db
-from app.models import User, UsageRecord, PLANS, CREDIT_COSTS
-import logging
+from app.models import User, UsageRecord, PLANS, CREDIT_COSTS, RECHARGE_PACKS
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,114 @@ async def get_user_credits(user_id: str) -> Dict[str, Any]:
     return billing
 
 
+async def _check_usage_alert(user_id: str, billing: dict):
+    """Create a notification when usage hits 80%. One alert per billing period."""
+    plan = billing.get("plan", "free")
+    total = PLANS.get(plan, PLANS["free"])["credits"]
+    used = billing.get("credits_used", 0)
+    if total <= 0:
+        return
+
+    pct = (used / total) * 100
+    if pct < 80:
+        return
+
+    period_start = billing.get("period_start", "")
+    existing = await db.notifications.find_one({
+        "user_id": user_id,
+        "type": "usage_alert",
+        "period_start": period_start,
+    })
+    if existing:
+        return
+
+    now = datetime.now(timezone.utc)
+    await db.notifications.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        "type": "usage_alert",
+        "title": "Credit usage at 80%",
+        "message": f"You've used {round(pct)}% of your {total:,} monthly credits. Consider upgrading your plan to avoid interruptions.",
+        "read": False,
+        "period_start": period_start,
+        "created_at": now.isoformat(),
+    })
+    logger.info(f"80% usage alert created for user {user_id} ({round(pct)}% used)")
+
+
+async def _try_auto_recharge(user_id: str, billing: dict) -> bool:
+    """Attempt to auto-recharge credits via Stripe. Returns True if successful."""
+    if not billing.get("auto_recharge_enabled"):
+        return False
+
+    customer_id = billing.get("stripe_customer_id")
+    if not customer_id:
+        return False
+
+    pack_id = billing.get("recharge_pack_id", "medium")
+    pack = RECHARGE_PACKS.get(pack_id)
+    if not pack:
+        return False
+
+    import stripe
+    stripe.api_key = os.environ.get("STRIPE_API_KEY")
+
+    try:
+        payment_intent = await asyncio.to_thread(
+            stripe.PaymentIntent.create,
+            customer=customer_id,
+            amount=int(pack["price"] * 100),
+            currency="usd",
+            confirm=True,
+            off_session=True,
+            description=f"Remora auto-recharge: {pack['credits']} credits",
+        )
+
+        if payment_intent.status == "succeeded":
+            await db.user_billing.update_one(
+                {"user_id": user_id},
+                {"$inc": {"credits_remaining": pack["credits"]}}
+            )
+            now = datetime.now(timezone.utc)
+            await db.payment_transactions.insert_one({
+                "user_id": user_id,
+                "plan_id": billing.get("plan", "free"),
+                "amount": pack["price"],
+                "currency": "usd",
+                "credits": pack["credits"],
+                "payment_status": "paid",
+                "status": "completed",
+                "type": "auto_recharge",
+                "recharge_pack": pack_id,
+                "stripe_payment_intent_id": payment_intent.id,
+                "created_at": now.isoformat(),
+            })
+            await db.notifications.insert_one({
+                "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+                "user_id": user_id,
+                "type": "auto_recharge",
+                "title": "Credits auto-recharged",
+                "message": f"Added {pack['credits']:,} credits (${pack['price']}) via auto-recharge.",
+                "read": False,
+                "created_at": now.isoformat(),
+            })
+            logger.info(f"Auto-recharge success: {pack['credits']} credits for user {user_id}")
+            return True
+
+    except Exception as e:
+        logger.error(f"Auto-recharge failed for user {user_id}: {e}")
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": user_id,
+            "type": "auto_recharge_failed",
+            "title": "Auto-recharge failed",
+            "message": f"Could not charge your payment method for {pack['credits']:,} credits. Please check your billing settings.",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return False
+
+
 async def deduct_credits(user_id: str, amount: int, operation: str) -> bool:
     """Deduct credits. Returns True if successful, False if insufficient."""
     billing = await get_user_credits(user_id)
@@ -146,7 +256,11 @@ async def deduct_credits(user_id: str, amount: int, operation: str) -> bool:
             billing = await get_user_credits(user_id)
 
     if billing["credits_remaining"] < amount:
-        return False
+        recharged = await _try_auto_recharge(user_id, billing)
+        if recharged:
+            billing = await get_user_credits(user_id)
+        if billing["credits_remaining"] < amount:
+            return False
 
     await db.user_billing.update_one(
         {"user_id": user_id},
@@ -159,6 +273,10 @@ async def deduct_credits(user_id: str, amount: int, operation: str) -> bool:
         "credits": amount,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
+
+    # Check usage alert (non-blocking)
+    billing["credits_used"] = billing.get("credits_used", 0) + amount
+    asyncio.create_task(_check_usage_alert(user_id, billing))
 
     return True
 

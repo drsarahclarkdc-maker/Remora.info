@@ -409,6 +409,12 @@ PLANS = {
     "enterprise": {"name": "Enterprise", "price": -1, "credits": -1, "description": "Custom credits, SLAs, dedicated endpoints"},
 }
 
+RECHARGE_PACKS = {
+    "small": {"name": "Small Recharge", "credits": 5000, "price": 15.00},
+    "medium": {"name": "Medium Recharge", "credits": 15000, "price": 40.00},
+    "large": {"name": "Large Recharge", "credits": 50000, "price": 100.00},
+}
+
 CREDIT_COSTS = {
     "search": 1,
     "crawl": 1,

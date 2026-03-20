@@ -27,7 +27,8 @@ import {
   Building2,
   ArrowUpDown,
   CreditCard,
-  Zap
+  Zap,
+  Bell
 } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 
@@ -54,6 +55,8 @@ const DashboardLayout = ({ children }) => {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [credits, setCredits] = useState(null);
+  const [notifications, setNotifications] = useState({ notifications: [], unread_count: 0 });
+  const [notifOpen, setNotifOpen] = useState(false);
 
   const isActive = (href) => location.pathname === href;
 
@@ -67,13 +70,28 @@ const DashboardLayout = ({ children }) => {
     } catch {}
   }, []);
 
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/notifications`, { credentials: 'include' });
+      if (res.ok) setNotifications(await res.json());
+    } catch {}
+  }, []);
+
   useEffect(() => {
     if (user) {
       fetchCredits();
-      const interval = setInterval(fetchCredits, 30000);
+      fetchNotifications();
+      const interval = setInterval(() => { fetchCredits(); fetchNotifications(); }, 30000);
       return () => clearInterval(interval);
     }
-  }, [user, fetchCredits]);
+  }, [user, fetchCredits, fetchNotifications]);
+
+  const markAllRead = async () => {
+    try {
+      await fetch(`${BACKEND_URL}/api/notifications/read-all`, { method: 'POST', credentials: 'include' });
+      fetchNotifications();
+    } catch {}
+  };
 
   const creditPct = credits ? Math.max(0, 100 - (credits.usage_percentage || 0)) : 100;
   const creditColor = creditPct > 50 ? 'bg-emerald-500' : creditPct > 20 ? 'bg-yellow-500' : 'bg-red-500';
@@ -224,6 +242,46 @@ const DashboardLayout = ({ children }) => {
         <header className="hidden lg:flex sticky top-0 z-30 h-16 items-center justify-between border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 px-6">
           <div />
           <div className="flex items-center gap-4">
+            {/* Notification bell */}
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative"
+                onClick={() => { setNotifOpen(!notifOpen); if (notifications.unread_count > 0) markAllRead(); }}
+                data-testid="notification-bell"
+              >
+                <Bell className="w-4 h-4" />
+                {notifications.unread_count > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-[10px] font-bold text-white flex items-center justify-center">
+                    {notifications.unread_count > 9 ? '9+' : notifications.unread_count}
+                  </span>
+                )}
+              </Button>
+              {notifOpen && (
+                <div className="absolute right-0 mt-2 w-80 rounded-lg border border-border bg-card shadow-lg z-50" data-testid="notification-dropdown">
+                  <div className="p-3 border-b border-border">
+                    <p className="text-sm font-semibold">Notifications</p>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {notifications.notifications.length === 0 ? (
+                      <p className="p-4 text-sm text-muted-foreground text-center">No notifications</p>
+                    ) : (
+                      notifications.notifications.slice(0, 10).map((n) => (
+                        <div
+                          key={n.notification_id}
+                          className={`p-3 border-b border-border/50 last:border-0 ${!n.read ? 'bg-primary/5' : ''}`}
+                        >
+                          <p className="text-sm font-medium">{n.title}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{n.message}</p>
+                          <p className="text-[10px] text-muted-foreground mt-1">{new Date(n.created_at).toLocaleString()}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             {/* Credit counter in header */}
             {credits && (
               <Link

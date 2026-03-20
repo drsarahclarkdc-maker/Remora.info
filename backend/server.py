@@ -27,6 +27,7 @@ from app.routers.rules import router as rules_router
 from app.routers.ranking import router as ranking_router
 from app.routers.orgs import router as orgs_router
 from app.routers.billing import router as billing_router
+from app.routers.notifications import router as notifications_router
 
 # Create the main app
 app = FastAPI(title="Remora API", description="API-first search engine for AI agents")
@@ -227,6 +228,7 @@ api_router.include_router(rules_router)
 api_router.include_router(ranking_router)
 api_router.include_router(orgs_router)
 api_router.include_router(billing_router)
+api_router.include_router(notifications_router)
 
 # Include the api_router in the main app
 app.include_router(api_router)

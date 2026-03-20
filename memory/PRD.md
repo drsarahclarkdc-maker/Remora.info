@@ -111,39 +111,45 @@ Build an API-first search engine for AI agents called remora.info with:
 - [x] Team/Organization support
 
 ## Future Enhancements (P2)
-- [ ] Backend refactoring: Break server.py into organized modules
 - [ ] Pay-as-you-go billing ($0.005/credit metered)
-- [ ] Enterprise tier (custom pricing, SLAs)
 - [ ] Usage alerts (email notifications at 80%)
 - [ ] Hard caps / auto-recharge packs
 - [ ] Export functionality
+- [ ] Further router extraction (break routes into separate files)
 
 ## Architecture
 ```
 /app/
 ├── backend/
-│   └── server.py         # FastAPI app (~2900 lines, needs modularization)
-│   └── requirements.txt
-│   └── .env
+│   ├── server.py         # Routes (~2300 lines, imports from app/)
+│   ├── app/
+│   │   ├── database.py   # MongoDB connection
+│   │   ├── models.py     # All Pydantic models + billing constants
+│   │   ├── auth.py       # Auth + billing helpers
+│   │   └── crawler.py    # Web crawler + webhook queue
+│   ├── requirements.txt
+│   ├── .env
 │   └── tests/
-│       └── test_new_features.py
+│       └── test_billing.py
 ├── frontend/
 │   ├── src/
-│   │   ├── App.js        # Main router (all 15 routes)
+│   │   ├── App.js        # Main router (all 16 routes)
 │   │   ├── index.css     # Global styles
 │   │   ├── context/
 │   │   │   └── AuthContext.js
 │   │   ├── components/
 │   │   │   └── layout/
-│   │   │       └── DashboardLayout.js # Sidebar (12 nav items)
-│   │   └── pages/        # 15 page components
+│   │   │       └── DashboardLayout.js # Sidebar (13 nav items + credit counter)
+│   │   └── pages/        # 16 page components
 │   ├── package.json
 │   └── tailwind.config.js
 ├── memory/
 │   └── PRD.md
 └── test_reports/
     ├── iteration_1.json
-    └── iteration_2.json
+    ├── iteration_2.json
+    ├── iteration_3.json
+    └── iteration_4.json
 ```
 
 - `/api/billing/plans`: List all plans (public)

@@ -76,9 +76,7 @@ Build an API-first search engine for AI agents called remora.info with:
 - Settings/Profile Page (`/settings`)
 
 ### Infrastructure
-- Meilisearch: Full-text search
-- Redis: Webhook delivery queue with 3 retries
-- MongoDB: Data persistence
+- MongoDB: Data persistence, text search, and webhook queue
 - Background Tasks: Scheduled crawl runner, webhook processor
 
 ## Pricing

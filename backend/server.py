@@ -2237,6 +2237,28 @@ async def get_ranking_config(config_id: str, user: User = Depends(get_current_us
         raise HTTPException(status_code=404, detail="Config not found")
     return config
 
+@api_router.put("/ranking/{config_id}")
+async def update_ranking_config(config_id: str, config_data: SearchRankingConfigCreate, user: User = Depends(get_current_user)):
+    """Update a search ranking configuration"""
+    existing = await db.ranking_configs.find_one({"config_id": config_id, "user_id": user.user_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Config not found")
+    
+    if config_data.is_default:
+        await db.ranking_configs.update_many(
+            {"user_id": user.user_id, "config_id": {"$ne": config_id}},
+            {"$set": {"is_default": False}}
+        )
+    
+    update_data = config_data.model_dump()
+    await db.ranking_configs.update_one(
+        {"config_id": config_id, "user_id": user.user_id},
+        {"$set": update_data}
+    )
+    
+    updated = await db.ranking_configs.find_one({"config_id": config_id}, {"_id": 0})
+    return updated
+
 @api_router.delete("/ranking/{config_id}")
 async def delete_ranking_config(config_id: str, user: User = Depends(get_current_user)):
     """Delete a ranking configuration"""
@@ -2319,6 +2341,59 @@ async def create_organization(org_data: OrganizationCreate, user: User = Depends
     result = org.model_dump()
     result["role"] = "owner"
     return result
+
+# NOTE: Static /orgs/invites routes MUST be defined before /orgs/{org_id} to avoid path conflicts
+@api_router.get("/orgs/invites/pending")
+async def list_pending_invites(user: User = Depends(get_current_user)):
+    """List pending invites for current user"""
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    if not user_doc:
+        return []
+    
+    invites = await db.org_invites.find({
+        "email": user_doc["email"],
+        "expires_at": {"$gt": datetime.now(timezone.utc).isoformat()}
+    }, {"_id": 0, "token": 0}).to_list(20)
+    
+    # Add org details
+    for invite in invites:
+        org = await db.organizations.find_one({"org_id": invite["org_id"]}, {"_id": 0})
+        if org:
+            invite["org_name"] = org["name"]
+    
+    return invites
+
+@api_router.post("/orgs/invites/{invite_id}/accept")
+async def accept_invite(invite_id: str, user: User = Depends(get_current_user)):
+    """Accept an organization invite"""
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    
+    invite = await db.org_invites.find_one({
+        "invite_id": invite_id,
+        "email": user_doc["email"]
+    })
+    
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    
+    if datetime.fromisoformat(invite["expires_at"]) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invite has expired")
+    
+    # Add as member
+    member = OrganizationMember(
+        member_id=f"mem_{uuid.uuid4().hex[:12]}",
+        org_id=invite["org_id"],
+        user_id=user.user_id,
+        role=invite["role"]
+    )
+    member_doc = member.model_dump()
+    member_doc["joined_at"] = member_doc["joined_at"].isoformat()
+    await db.org_members.insert_one(member_doc)
+    
+    # Delete invite
+    await db.org_invites.delete_one({"invite_id": invite_id})
+    
+    return {"message": "Invite accepted", "org_id": invite["org_id"]}
 
 @api_router.get("/orgs/{org_id}")
 async def get_organization(org_id: str, user: User = Depends(get_current_user)):
@@ -2411,58 +2486,6 @@ async def invite_member(org_id: str, invite_data: InviteMemberRequest, user: Use
         "role": invite.role,
         "expires_at": invite.expires_at.isoformat()
     }
-
-@api_router.get("/orgs/invites/pending")
-async def list_pending_invites(user: User = Depends(get_current_user)):
-    """List pending invites for current user"""
-    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
-    if not user_doc:
-        return []
-    
-    invites = await db.org_invites.find({
-        "email": user_doc["email"],
-        "expires_at": {"$gt": datetime.now(timezone.utc).isoformat()}
-    }, {"_id": 0, "token": 0}).to_list(20)
-    
-    # Add org details
-    for invite in invites:
-        org = await db.organizations.find_one({"org_id": invite["org_id"]}, {"_id": 0})
-        if org:
-            invite["org_name"] = org["name"]
-    
-    return invites
-
-@api_router.post("/orgs/invites/{invite_id}/accept")
-async def accept_invite(invite_id: str, user: User = Depends(get_current_user)):
-    """Accept an organization invite"""
-    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
-    
-    invite = await db.org_invites.find_one({
-        "invite_id": invite_id,
-        "email": user_doc["email"]
-    })
-    
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found")
-    
-    if datetime.fromisoformat(invite["expires_at"]) < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Invite has expired")
-    
-    # Add as member
-    member = OrganizationMember(
-        member_id=f"mem_{uuid.uuid4().hex[:12]}",
-        org_id=invite["org_id"],
-        user_id=user.user_id,
-        role=invite["role"]
-    )
-    member_doc = member.model_dump()
-    member_doc["joined_at"] = member_doc["joined_at"].isoformat()
-    await db.org_members.insert_one(member_doc)
-    
-    # Delete invite
-    await db.org_invites.delete_one({"invite_id": invite_id})
-    
-    return {"message": "Invite accepted", "org_id": invite["org_id"]}
 
 @api_router.delete("/orgs/{org_id}/members/{member_user_id}")
 async def remove_member(org_id: str, member_user_id: str, user: User = Depends(get_current_user)):

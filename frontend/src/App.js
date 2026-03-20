@@ -17,6 +17,9 @@ import Settings from "@/pages/Settings";
 import ApiDocs from "@/pages/ApiDocs";
 import ContentSources from "@/pages/ContentSources";
 import CrawlHistory from "@/pages/CrawlHistory";
+import CrawlRules from "@/pages/CrawlRules";
+import Organizations from "@/pages/Organizations";
+import SearchRanking from "@/pages/SearchRanking";
 
 // Context
 import { AuthProvider, useAuth } from "@/context/AuthContext";
@@ -67,6 +70,9 @@ const AppRouter = () => {
       <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
       <Route path="/sources" element={<ProtectedRoute><ContentSources /></ProtectedRoute>} />
       <Route path="/history" element={<ProtectedRoute><CrawlHistory /></ProtectedRoute>} />
+      <Route path="/crawl-rules" element={<ProtectedRoute><CrawlRules /></ProtectedRoute>} />
+      <Route path="/organizations" element={<ProtectedRoute><Organizations /></ProtectedRoute>} />
+      <Route path="/ranking" element={<ProtectedRoute><SearchRanking /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
     </Routes>
   );

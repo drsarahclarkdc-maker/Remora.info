@@ -22,7 +22,10 @@ import {
   X,
   Globe,
   History,
-  Send
+  Send,
+  Settings2,
+  Building2,
+  ArrowUpDown
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -31,11 +34,14 @@ const navigation = [
   { name: 'API Keys', href: '/keys', icon: Key },
   { name: 'Agents', href: '/agents', icon: Bot },
   { name: 'Sources', href: '/sources', icon: Globe },
+  { name: 'Crawl Rules', href: '/crawl-rules', icon: Settings2 },
   { name: 'Webhooks', href: '/webhooks', icon: Webhook },
   { name: 'Deliveries', href: '/webhooks/deliveries', icon: Send },
   { name: 'Search Test', href: '/search', icon: Search },
+  { name: 'Ranking', href: '/ranking', icon: ArrowUpDown },
   { name: 'Crawl History', href: '/history', icon: History },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Organizations', href: '/organizations', icon: Building2 },
 ];
 
 const DashboardLayout = ({ children }) => {

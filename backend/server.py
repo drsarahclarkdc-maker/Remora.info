@@ -192,6 +192,12 @@ class SearchQuery(BaseModel):
     intent: Optional[str] = None
     filters: Optional[Dict[str, Any]] = None
     max_results: int = 10
+    # Ranking options
+    ranking_config_id: Optional[str] = None  # Use a saved ranking config
+    boost_domains: Optional[List[str]] = None  # Domains to boost
+    prefer_types: Optional[List[str]] = None  # Content types to prefer
+    recency_boost: bool = True  # Boost recent content
+    sort_by: Optional[str] = None  # relevance, recency, or None
 
 class SearchResult(BaseModel):
     results: List[Dict[str, Any]]
@@ -301,6 +307,139 @@ class ContentSourceUpdate(BaseModel):
     name: Optional[str] = None
     crawl_frequency: Optional[str] = None
     is_active: Optional[bool] = None
+
+# ==================== Team/Organization Models ====================
+
+class Organization(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    org_id: str
+    name: str
+    slug: str
+    owner_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class OrganizationCreate(BaseModel):
+    name: str
+
+class OrganizationMember(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    member_id: str
+    org_id: str
+    user_id: str
+    role: str = "member"  # owner, admin, member
+    joined_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class OrganizationInvite(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    invite_id: str
+    org_id: str
+    email: str
+    role: str = "member"
+    invited_by: str
+    token: str
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class InviteMemberRequest(BaseModel):
+    email: str
+    role: str = "member"
+
+# ==================== Crawl Rules Models ====================
+
+class CrawlRule(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    rule_id: str
+    user_id: str
+    domain: str
+    name: str
+    # Extraction rules
+    title_selector: Optional[str] = None  # CSS selector for title
+    content_selector: Optional[str] = None  # CSS selector for main content
+    description_selector: Optional[str] = None  # CSS selector for description
+    exclude_selectors: List[str] = []  # CSS selectors to exclude (ads, nav, etc.)
+    # Crawl behavior
+    follow_links: bool = False
+    max_depth: int = 1
+    allowed_paths: List[str] = []  # URL path patterns to follow
+    blocked_paths: List[str] = []  # URL path patterns to block
+    # Rate limiting
+    delay_ms: int = 1000  # Delay between requests in ms
+    max_pages: int = 100  # Max pages to crawl per session
+    # Custom headers
+    custom_headers: Dict[str, str] = {}
+    # Metadata
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class CrawlRuleCreate(BaseModel):
+    domain: str
+    name: str
+    title_selector: Optional[str] = None
+    content_selector: Optional[str] = None
+    description_selector: Optional[str] = None
+    exclude_selectors: List[str] = []
+    follow_links: bool = False
+    max_depth: int = 1
+    allowed_paths: List[str] = []
+    blocked_paths: List[str] = []
+    delay_ms: int = 1000
+    max_pages: int = 100
+    custom_headers: Dict[str, str] = {}
+
+class CrawlRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    title_selector: Optional[str] = None
+    content_selector: Optional[str] = None
+    description_selector: Optional[str] = None
+    exclude_selectors: Optional[List[str]] = None
+    follow_links: Optional[bool] = None
+    max_depth: Optional[int] = None
+    allowed_paths: Optional[List[str]] = None
+    blocked_paths: Optional[List[str]] = None
+    delay_ms: Optional[int] = None
+    max_pages: Optional[int] = None
+    custom_headers: Optional[Dict[str, str]] = None
+    is_active: Optional[bool] = None
+
+# ==================== Search Ranking Models ====================
+
+class SearchRankingConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    config_id: str
+    user_id: str
+    name: str
+    # Boost factors (1.0 = normal, >1 = boost, <1 = reduce)
+    title_weight: float = 2.0
+    description_weight: float = 1.5
+    content_weight: float = 1.0
+    # Recency boost
+    recency_boost: bool = True
+    recency_decay_days: int = 30  # How many days until recency boost decays to 0
+    # Domain preferences
+    boosted_domains: List[str] = []  # Domains to boost in results
+    penalized_domains: List[str] = []  # Domains to penalize
+    domain_boost_factor: float = 1.5
+    # Content type preferences
+    preferred_types: List[str] = []  # e.g., ["documentation", "tutorial"]
+    type_boost_factor: float = 1.3
+    # Default config
+    is_default: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SearchRankingConfigCreate(BaseModel):
+    name: str
+    title_weight: float = 2.0
+    description_weight: float = 1.5
+    content_weight: float = 1.0
+    recency_boost: bool = True
+    recency_decay_days: int = 30
+    boosted_domains: List[str] = []
+    penalized_domains: List[str] = []
+    domain_boost_factor: float = 1.5
+    preferred_types: List[str] = []
+    type_boost_factor: float = 1.3
+    is_default: bool = False
 
 class WebhookDelivery(BaseModel):
     delivery_id: str
@@ -557,40 +696,65 @@ async def process_webhook_queue():
 
 # ==================== Web Crawler ====================
 
-async def crawl_url(url: str) -> Dict[str, Any]:
-    """Crawl a URL and extract structured data"""
+async def crawl_url(url: str, crawl_rule: Optional[Dict] = None) -> Dict[str, Any]:
+    """Crawl a URL and extract structured data, optionally using custom crawl rules"""
     try:
+        # Build headers
+        headers = {"User-Agent": "Remora/1.0 (AI Agent Search Engine; https://remora.info)"}
+        if crawl_rule and crawl_rule.get("custom_headers"):
+            headers.update(crawl_rule["custom_headers"])
+        
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={
-                "User-Agent": "Remora/1.0 (AI Agent Search Engine; https://remora.info)"
-            })
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'lxml')
             
-            # Extract title
+            # Apply exclude selectors from crawl rules
+            if crawl_rule and crawl_rule.get("exclude_selectors"):
+                for selector in crawl_rule["exclude_selectors"]:
+                    for element in soup.select(selector):
+                        element.decompose()
+            
+            # Extract title (use custom selector if provided)
             title = ""
-            if soup.title:
-                title = soup.title.string or ""
-            elif soup.find('h1'):
-                title = soup.find('h1').get_text(strip=True)
+            if crawl_rule and crawl_rule.get("title_selector"):
+                element = soup.select_one(crawl_rule["title_selector"])
+                if element:
+                    title = element.get_text(strip=True)
+            if not title:
+                if soup.title:
+                    title = soup.title.string or ""
+                elif soup.find('h1'):
+                    title = soup.find('h1').get_text(strip=True)
             
-            # Extract description
+            # Extract description (use custom selector if provided)
             description = ""
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
-            if meta_desc:
-                description = meta_desc.get('content', '')
-            elif soup.find('meta', attrs={'property': 'og:description'}):
-                description = soup.find('meta', attrs={'property': 'og:description'}).get('content', '')
+            if crawl_rule and crawl_rule.get("description_selector"):
+                element = soup.select_one(crawl_rule["description_selector"])
+                if element:
+                    description = element.get_text(strip=True)
+            if not description:
+                meta_desc = soup.find('meta', attrs={'name': 'description'})
+                if meta_desc:
+                    description = meta_desc.get('content', '')
+                elif soup.find('meta', attrs={'property': 'og:description'}):
+                    description = soup.find('meta', attrs={'property': 'og:description'}).get('content', '')
             
-            # Extract main content
+            # Extract main content (use custom selector if provided)
             content = ""
-            # Try common content containers
-            for selector in ['article', 'main', '.content', '#content', '.post-content', '.entry-content']:
-                element = soup.select_one(selector)
+            if crawl_rule and crawl_rule.get("content_selector"):
+                element = soup.select_one(crawl_rule["content_selector"])
                 if element:
                     content = element.get_text(separator=' ', strip=True)
-                    break
+            
+            if not content:
+                # Try common content containers
+                for selector in ['article', 'main', '.content', '#content', '.post-content', '.entry-content']:
+                    element = soup.select_one(selector)
+                    if element:
+                        content = element.get_text(separator=' ', strip=True)
+                        break
             
             if not content:
                 # Fallback to body text
@@ -948,6 +1112,13 @@ async def agent_search(query: SearchQuery, request: Request, background_tasks: B
     """
     Agent Query API - accepts structured JSON queries, returns JSON results.
     FREE for everyone - just tracking usage.
+    
+    Supports advanced ranking options:
+    - boost_domains: List of domains to prioritize
+    - prefer_types: List of content types to prefer (documentation, article, etc.)
+    - recency_boost: Whether to boost recent content (default: True)
+    - sort_by: 'relevance' (default) or 'recency'
+    - ranking_config_id: Use a saved ranking configuration
     """
     import time
     start_time = time.time()
@@ -960,6 +1131,14 @@ async def agent_search(query: SearchQuery, request: Request, background_tasks: B
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     key_doc = await db.api_keys.find_one({"key_hash": key_hash}, {"_id": 0})
     
+    # Load ranking config if specified
+    ranking_config = None
+    if query.ranking_config_id:
+        ranking_config = await db.ranking_configs.find_one(
+            {"config_id": query.ranking_config_id, "user_id": user.user_id},
+            {"_id": 0}
+        )
+    
     results = []
     total = 0
     
@@ -967,7 +1146,7 @@ async def agent_search(query: SearchQuery, request: Request, background_tasks: B
     if MEILI_AVAILABLE and meili_client:
         try:
             index = meili_client.index("content")
-            search_params = {"limit": query.max_results}
+            search_params = {"limit": query.max_results * 3}  # Get more for re-ranking
             
             if query.filters:
                 filter_parts = []
@@ -994,14 +1173,72 @@ async def agent_search(query: SearchQuery, request: Request, background_tasks: B
             cursor = db.crawled_content.find(
                 mongo_query,
                 {"_id": 0, "score": {"$meta": "textScore"}}
-            ).sort([("score", {"$meta": "textScore"})]).limit(query.max_results)
+            ).sort([("score", {"$meta": "textScore"})]).limit(query.max_results * 3)
             
-            results = await cursor.to_list(query.max_results)
+            results = await cursor.to_list(query.max_results * 3)
             total = len(results)
         except Exception as e:
             logger.warning(f"MongoDB search error: {e}")
             results = []
             total = 0
+    
+    # Apply advanced ranking
+    if results:
+        now = datetime.now(timezone.utc)
+        
+        # Get boost settings
+        boost_domains = query.boost_domains or (ranking_config.get("boosted_domains", []) if ranking_config else [])
+        penalize_domains = ranking_config.get("penalized_domains", []) if ranking_config else []
+        prefer_types = query.prefer_types or (ranking_config.get("preferred_types", []) if ranking_config else [])
+        domain_boost = ranking_config.get("domain_boost_factor", 1.5) if ranking_config else 1.5
+        type_boost = ranking_config.get("type_boost_factor", 1.3) if ranking_config else 1.3
+        recency_decay_days = ranking_config.get("recency_decay_days", 30) if ranking_config else 30
+        apply_recency = query.recency_boost if query.recency_boost is not None else (ranking_config.get("recency_boost", True) if ranking_config else True)
+        
+        for result in results:
+            score = result.get("score", 1.0) if isinstance(result.get("score"), (int, float)) else 1.0
+            
+            # Domain boosting
+            domain = result.get("domain", "")
+            if domain in boost_domains:
+                score *= domain_boost
+            elif domain in penalize_domains:
+                score *= 0.5
+            
+            # Type boosting
+            content_type = result.get("structured_data", {}).get("type", "")
+            if content_type in prefer_types:
+                score *= type_boost
+            
+            # Recency boosting
+            if apply_recency:
+                crawled_at = result.get("crawled_at") or result.get("last_updated")
+                if crawled_at:
+                    if isinstance(crawled_at, str):
+                        try:
+                            crawled_at = datetime.fromisoformat(crawled_at.replace('Z', '+00:00'))
+                        except:
+                            crawled_at = None
+                    if crawled_at:
+                        if crawled_at.tzinfo is None:
+                            crawled_at = crawled_at.replace(tzinfo=timezone.utc)
+                        days_old = (now - crawled_at).days
+                        recency_factor = max(0, 1 - (days_old / recency_decay_days))
+                        score *= (1 + recency_factor * 0.3)  # Up to 30% boost for fresh content
+            
+            result["_ranking_score"] = score
+        
+        # Sort by ranking score or recency
+        if query.sort_by == "recency":
+            results.sort(key=lambda x: x.get("crawled_at", ""), reverse=True)
+        else:
+            results.sort(key=lambda x: x.get("_ranking_score", 0), reverse=True)
+        
+        # Clean up and limit results
+        results = results[:query.max_results]
+        for result in results:
+            result.pop("_ranking_score", None)
+            result.pop("score", None)
     
     processing_time = int((time.time() - start_time) * 1000)
     
@@ -1868,6 +2105,408 @@ async def get_recent_usage(user: User = Depends(get_current_user), limit: int = 
             record["timestamp"] = datetime.fromisoformat(record["timestamp"])
     
     return records
+
+# ==================== Crawl Rules ====================
+
+@api_router.get("/rules")
+async def list_crawl_rules(user: User = Depends(get_current_user)):
+    """List all crawl rules for current user"""
+    rules = await db.crawl_rules.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    
+    return rules
+
+@api_router.post("/rules")
+async def create_crawl_rule(rule_data: CrawlRuleCreate, user: User = Depends(get_current_user)):
+    """Create a custom crawl rule for a domain"""
+    # Check for existing rule for this domain
+    existing = await db.crawl_rules.find_one({
+        "user_id": user.user_id,
+        "domain": rule_data.domain
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Rule for this domain already exists")
+    
+    rule = CrawlRule(
+        rule_id=f"rule_{uuid.uuid4().hex[:12]}",
+        user_id=user.user_id,
+        **rule_data.model_dump()
+    )
+    
+    doc = rule.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["updated_at"] = doc["updated_at"].isoformat()
+    await db.crawl_rules.insert_one(doc)
+    
+    return rule.model_dump()
+
+@api_router.get("/rules/{rule_id}")
+async def get_crawl_rule(rule_id: str, user: User = Depends(get_current_user)):
+    """Get a specific crawl rule"""
+    rule = await db.crawl_rules.find_one(
+        {"rule_id": rule_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return rule
+
+@api_router.put("/rules/{rule_id}")
+async def update_crawl_rule(rule_id: str, rule_data: CrawlRuleUpdate, user: User = Depends(get_current_user)):
+    """Update a crawl rule"""
+    update_data = {k: v for k, v in rule_data.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    result = await db.crawl_rules.update_one(
+        {"rule_id": rule_id, "user_id": user.user_id},
+        {"$set": update_data}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    
+    rule = await db.crawl_rules.find_one({"rule_id": rule_id}, {"_id": 0})
+    return rule
+
+@api_router.delete("/rules/{rule_id}")
+async def delete_crawl_rule(rule_id: str, user: User = Depends(get_current_user)):
+    """Delete a crawl rule"""
+    result = await db.crawl_rules.delete_one({
+        "rule_id": rule_id,
+        "user_id": user.user_id
+    })
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    
+    return {"message": "Rule deleted"}
+
+@api_router.get("/rules/domain/{domain}")
+async def get_rule_for_domain(domain: str, user: User = Depends(get_current_user)):
+    """Get crawl rule for a specific domain"""
+    rule = await db.crawl_rules.find_one(
+        {"user_id": user.user_id, "domain": domain, "is_active": True},
+        {"_id": 0}
+    )
+    return rule
+
+# ==================== Search Ranking Configs ====================
+
+@api_router.get("/ranking")
+async def list_ranking_configs(user: User = Depends(get_current_user)):
+    """List all ranking configurations"""
+    configs = await db.ranking_configs.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    return configs
+
+@api_router.post("/ranking")
+async def create_ranking_config(config_data: SearchRankingConfigCreate, user: User = Depends(get_current_user)):
+    """Create a search ranking configuration"""
+    # If setting as default, unset other defaults
+    if config_data.is_default:
+        await db.ranking_configs.update_many(
+            {"user_id": user.user_id},
+            {"$set": {"is_default": False}}
+        )
+    
+    config = SearchRankingConfig(
+        config_id=f"rank_{uuid.uuid4().hex[:12]}",
+        user_id=user.user_id,
+        **config_data.model_dump()
+    )
+    
+    doc = config.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.ranking_configs.insert_one(doc)
+    
+    return config.model_dump()
+
+@api_router.get("/ranking/{config_id}")
+async def get_ranking_config(config_id: str, user: User = Depends(get_current_user)):
+    """Get a specific ranking configuration"""
+    config = await db.ranking_configs.find_one(
+        {"config_id": config_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    if not config:
+        raise HTTPException(status_code=404, detail="Config not found")
+    return config
+
+@api_router.delete("/ranking/{config_id}")
+async def delete_ranking_config(config_id: str, user: User = Depends(get_current_user)):
+    """Delete a ranking configuration"""
+    result = await db.ranking_configs.delete_one({
+        "config_id": config_id,
+        "user_id": user.user_id
+    })
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Config not found")
+    
+    return {"message": "Config deleted"}
+
+# ==================== Organizations & Teams ====================
+
+def generate_slug(name: str) -> str:
+    """Generate a URL-safe slug from name"""
+    import re
+    slug = name.lower().strip()
+    slug = re.sub(r'[^\w\s-]', '', slug)
+    slug = re.sub(r'[\s_-]+', '-', slug)
+    return slug[:50]
+
+@api_router.get("/orgs")
+async def list_organizations(user: User = Depends(get_current_user)):
+    """List organizations the user belongs to"""
+    # Get memberships
+    memberships = await db.org_members.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).to_list(50)
+    
+    org_ids = [m["org_id"] for m in memberships]
+    
+    # Get org details
+    orgs = await db.organizations.find(
+        {"org_id": {"$in": org_ids}},
+        {"_id": 0}
+    ).to_list(50)
+    
+    # Add role to each org
+    role_map = {m["org_id"]: m["role"] for m in memberships}
+    for org in orgs:
+        org["role"] = role_map.get(org["org_id"], "member")
+    
+    return orgs
+
+@api_router.post("/orgs")
+async def create_organization(org_data: OrganizationCreate, user: User = Depends(get_current_user)):
+    """Create a new organization"""
+    slug = generate_slug(org_data.name)
+    
+    # Check slug uniqueness
+    existing = await db.organizations.find_one({"slug": slug})
+    if existing:
+        slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+    
+    org = Organization(
+        org_id=f"org_{uuid.uuid4().hex[:12]}",
+        name=org_data.name,
+        slug=slug,
+        owner_id=user.user_id
+    )
+    
+    doc = org.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.organizations.insert_one(doc)
+    
+    # Add owner as member
+    member = OrganizationMember(
+        member_id=f"mem_{uuid.uuid4().hex[:12]}",
+        org_id=org.org_id,
+        user_id=user.user_id,
+        role="owner"
+    )
+    member_doc = member.model_dump()
+    member_doc["joined_at"] = member_doc["joined_at"].isoformat()
+    await db.org_members.insert_one(member_doc)
+    
+    result = org.model_dump()
+    result["role"] = "owner"
+    return result
+
+@api_router.get("/orgs/{org_id}")
+async def get_organization(org_id: str, user: User = Depends(get_current_user)):
+    """Get organization details"""
+    # Check membership
+    membership = await db.org_members.find_one({
+        "org_id": org_id,
+        "user_id": user.user_id
+    })
+    if not membership:
+        raise HTTPException(status_code=403, detail="Not a member of this organization")
+    
+    org = await db.organizations.find_one({"org_id": org_id}, {"_id": 0})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    
+    org["role"] = membership["role"]
+    return org
+
+@api_router.get("/orgs/{org_id}/members")
+async def list_org_members(org_id: str, user: User = Depends(get_current_user)):
+    """List organization members"""
+    # Check membership
+    membership = await db.org_members.find_one({
+        "org_id": org_id,
+        "user_id": user.user_id
+    })
+    if not membership:
+        raise HTTPException(status_code=403, detail="Not a member of this organization")
+    
+    members = await db.org_members.find(
+        {"org_id": org_id},
+        {"_id": 0}
+    ).to_list(100)
+    
+    # Get user details for each member
+    for member in members:
+        user_doc = await db.users.find_one({"user_id": member["user_id"]}, {"_id": 0})
+        if user_doc:
+            member["name"] = user_doc.get("name")
+            member["email"] = user_doc.get("email")
+            member["picture"] = user_doc.get("picture")
+    
+    return members
+
+@api_router.post("/orgs/{org_id}/invite")
+async def invite_member(org_id: str, invite_data: InviteMemberRequest, user: User = Depends(get_current_user)):
+    """Invite a user to the organization"""
+    # Check admin/owner access
+    membership = await db.org_members.find_one({
+        "org_id": org_id,
+        "user_id": user.user_id,
+        "role": {"$in": ["owner", "admin"]}
+    })
+    if not membership:
+        raise HTTPException(status_code=403, detail="Only admins can invite members")
+    
+    # Check if already a member
+    existing_member = await db.org_members.find_one({
+        "org_id": org_id
+    })
+    existing_user = await db.users.find_one({"email": invite_data.email})
+    if existing_user:
+        existing_membership = await db.org_members.find_one({
+            "org_id": org_id,
+            "user_id": existing_user["user_id"]
+        })
+        if existing_membership:
+            raise HTTPException(status_code=400, detail="User is already a member")
+    
+    # Create invite
+    invite = OrganizationInvite(
+        invite_id=f"inv_{uuid.uuid4().hex[:12]}",
+        org_id=org_id,
+        email=invite_data.email,
+        role=invite_data.role,
+        invited_by=user.user_id,
+        token=secrets.token_urlsafe(32),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+    )
+    
+    doc = invite.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["expires_at"] = doc["expires_at"].isoformat()
+    await db.org_invites.insert_one(doc)
+    
+    return {
+        "invite_id": invite.invite_id,
+        "email": invite.email,
+        "role": invite.role,
+        "expires_at": invite.expires_at.isoformat()
+    }
+
+@api_router.get("/orgs/invites/pending")
+async def list_pending_invites(user: User = Depends(get_current_user)):
+    """List pending invites for current user"""
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    if not user_doc:
+        return []
+    
+    invites = await db.org_invites.find({
+        "email": user_doc["email"],
+        "expires_at": {"$gt": datetime.now(timezone.utc).isoformat()}
+    }, {"_id": 0, "token": 0}).to_list(20)
+    
+    # Add org details
+    for invite in invites:
+        org = await db.organizations.find_one({"org_id": invite["org_id"]}, {"_id": 0})
+        if org:
+            invite["org_name"] = org["name"]
+    
+    return invites
+
+@api_router.post("/orgs/invites/{invite_id}/accept")
+async def accept_invite(invite_id: str, user: User = Depends(get_current_user)):
+    """Accept an organization invite"""
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    
+    invite = await db.org_invites.find_one({
+        "invite_id": invite_id,
+        "email": user_doc["email"]
+    })
+    
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    
+    if datetime.fromisoformat(invite["expires_at"]) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invite has expired")
+    
+    # Add as member
+    member = OrganizationMember(
+        member_id=f"mem_{uuid.uuid4().hex[:12]}",
+        org_id=invite["org_id"],
+        user_id=user.user_id,
+        role=invite["role"]
+    )
+    member_doc = member.model_dump()
+    member_doc["joined_at"] = member_doc["joined_at"].isoformat()
+    await db.org_members.insert_one(member_doc)
+    
+    # Delete invite
+    await db.org_invites.delete_one({"invite_id": invite_id})
+    
+    return {"message": "Invite accepted", "org_id": invite["org_id"]}
+
+@api_router.delete("/orgs/{org_id}/members/{member_user_id}")
+async def remove_member(org_id: str, member_user_id: str, user: User = Depends(get_current_user)):
+    """Remove a member from the organization"""
+    # Check admin/owner access
+    membership = await db.org_members.find_one({
+        "org_id": org_id,
+        "user_id": user.user_id,
+        "role": {"$in": ["owner", "admin"]}
+    })
+    if not membership:
+        raise HTTPException(status_code=403, detail="Only admins can remove members")
+    
+    # Can't remove owner
+    org = await db.organizations.find_one({"org_id": org_id})
+    if org and org["owner_id"] == member_user_id:
+        raise HTTPException(status_code=400, detail="Cannot remove organization owner")
+    
+    result = await db.org_members.delete_one({
+        "org_id": org_id,
+        "user_id": member_user_id
+    })
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Member not found")
+    
+    return {"message": "Member removed"}
+
+@api_router.delete("/orgs/{org_id}")
+async def delete_organization(org_id: str, user: User = Depends(get_current_user)):
+    """Delete an organization (owner only)"""
+    org = await db.organizations.find_one({"org_id": org_id})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    
+    if org["owner_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="Only owner can delete organization")
+    
+    # Delete org and all members
+    await db.organizations.delete_one({"org_id": org_id})
+    await db.org_members.delete_many({"org_id": org_id})
+    await db.org_invites.delete_many({"org_id": org_id})
+    
+    return {"message": "Organization deleted"}
 
 # ==================== Health & Status ====================
 

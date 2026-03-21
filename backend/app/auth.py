@@ -121,6 +121,19 @@ async def get_user_credits(user_id: str) -> Dict[str, Any]:
             "period_end": (now + timedelta(days=30)).isoformat(),
         }
         await db.user_billing.insert_one(billing)
+        return billing
+
+    # If plan credits were reduced (e.g. free 3000→1000), cap remaining to plan total
+    plan = billing.get("plan", "free")
+    plan_credits = PLANS.get(plan, PLANS["free"])["credits"]
+    if plan_credits > 0 and billing.get("credits_remaining", 0) > plan_credits:
+        billing["credits_remaining"] = plan_credits
+        billing["credits_used"] = 0
+        await db.user_billing.update_one(
+            {"user_id": user_id},
+            {"$set": {"credits_remaining": plan_credits, "credits_used": 0}}
+        )
+
     return billing
 
 

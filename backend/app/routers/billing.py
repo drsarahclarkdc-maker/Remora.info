@@ -359,7 +359,7 @@ async def cancel_subscription(user: User = Depends(get_current_user)):
         "created_at": now.isoformat(),
     })
 
-    return {"message": "Subscription cancelled. Reverted to Free plan (3,000 credits).", "plan": "free"}
+    return {"message": "Subscription cancelled. Reverted to Free plan (1,000 credits).", "plan": "free"}
 
 
 # ---------- Subscription Info ----------

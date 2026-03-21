@@ -86,7 +86,7 @@ const LandingPage = () => {
       name: 'Free',
       price: '$0',
       period: '/month',
-      credits: '3,000 credits/mo',
+      credits: '1,000 credits/mo',
       features: ['Basic search API', 'Single URL crawl', 'Agent registration', 'Usage analytics'],
       cta: 'Get Started Free',
       popular: false

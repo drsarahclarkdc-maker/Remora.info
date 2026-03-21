@@ -27,7 +27,7 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const PLAN_FEATURES = {
-  free: ['3,000 credits/month', 'Basic search', 'Single URL crawl', 'Community support'],
+  free: ['1,000 credits/month', 'Basic search', 'Single URL crawl', 'Community support'],
   starter: ['10,000 credits/month', 'Bulk crawl (100 URLs)', 'Scheduled crawling', 'Webhook deliveries', 'Email support'],
   growth: ['40,000 credits/month', 'Everything in Starter', 'Custom crawl rules', 'Search ranking configs', 'Priority support'],
   scale: ['200,000 credits/month', 'Everything in Growth', 'Organization & teams', 'Dedicated support', 'SLA guarantee'],
@@ -412,7 +412,7 @@ const Billing = () => {
                 <div className="flex-1">
                   <p className="font-medium text-sm">Cancel your subscription?</p>
                   <p className="text-sm text-muted-foreground mt-1">
-                    You'll immediately revert to the Free plan with 3,000 credits/month. Any prorated credit will be applied to your Stripe balance.
+                    You'll immediately revert to the Free plan with 1,000 credits/month. Any prorated credit will be applied to your Stripe balance.
                   </p>
                   <div className="flex gap-3 mt-4">
                     <Button

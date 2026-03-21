@@ -402,7 +402,7 @@ class CheckoutRequest(BaseModel):
 
 # Billing constants
 PLANS = {
-    "free": {"name": "Free", "price": 0.0, "credits": 3000, "description": "3,000 credits/month"},
+    "free": {"name": "Free", "price": 0.0, "credits": 1000, "description": "1,000 credits/month"},
     "starter": {"name": "Starter", "price": 29.0, "credits": 10000, "description": "10,000 credits/month"},
     "growth": {"name": "Growth", "price": 99.0, "credits": 40000, "description": "40,000 credits/month"},
     "scale": {"name": "Scale", "price": 399.0, "credits": 200000, "description": "200,000 credits/month"},
